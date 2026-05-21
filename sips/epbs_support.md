@@ -189,7 +189,7 @@ Pre-consensus RANDAO flow is unchanged. Post-consensus is unchanged: each operat
 - Gloas introduces a trustless `execution_payload_bid` p2p market that gives proposers a new fallback for trusted block building without depending on their own EL.
 - Adding a second QBFT duty solely to cover self-build envelope signing is significant protocol surface for a use case unlikely to materialize at scale among SSV operators.
 
-Consequence: SSV proposer slots that resolve to self-build (no acceptable external bid arrived at the BN) will see PTC attestations record `payload_present = FALSE` (see §3) and the proposer forfeits the payload reward for that slot.
+Consequence: SSV does not complete the Gloas self-build path. When no acceptable external bid is available for a proposer slot, the cluster cannot produce and publish a valid `SignedExecutionPayloadEnvelope`; the slot's payload is treated as absent (PTC attestations record `payload_present = FALSE`, see §3) and the proposer forfeits the payload reward for that slot.
 
 ### 5. Proposer Preferences Duty
 
