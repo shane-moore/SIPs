@@ -99,6 +99,8 @@ A new `GloasBeaconVoteValueCheckF()` mirrors today's `BeaconVoteValueCheckF()` a
 - rejects `AttestationDataIndex` values other than `0` or `1`;
 - builds the `AttestationData` passed to `IsAttestationSlashable` using the decided `AttestationDataIndex` rather than the existing `math.MaxUint64` sentinel, so the Gloas double-vote predicate trips correctly when an operator is asked to sign both `index=0` and `index=1` for the same `(source, target, slot)`.
 
+The existing sentinel is in place because pre-Gloas consensus data carries no `CommitteeIndex`; `math.MaxUint64` keeps `IsAttestationSlashable` from flagging legitimate same-`(source, target, slot, BlockRoot)` attestations as double-votes.
+
 The [Gloas same-slot rule](https://github.com/ethereum/consensus-specs/blob/4a4937bea332d72a55a76aaebcb97fbcdc189f69/specs/gloas/validator.md#attestation) (`block.slot == data.slot ⇒ data.index = 0`) is not enforced locally: the cluster has only the QBFT-decided `BlockRoot` and trusts `AttestationDataIndex` from the leader. A single bad same-slot `index=1` is rejected by the ethereum network and ignored on chain but is not slashable, while cross-`index` equivocation over the same `(source, target, slot, BlockRoot)` is still caught by `IsAttestationSlashable` per the previous bullet.
 
 Pre-Gloas slots continue to run `BeaconVoteValueCheckF()` unchanged.
