@@ -181,7 +181,7 @@ Under Gloas, `produceBlockV4` replaces the pre-Gloas proposer flow; blinded bloc
 
 `ProposerConsensusData` is preserved: its struct shape (`Duty`, `Version`, `DataSSZ []byte`) is unchanged. `DataSSZ` carries the SSZ-encoded `Gloas.BeaconBlock`. For the stateless `BlockContents` variant, the inline envelope, blobs, and KZG proofs returned by the BN are not put through QBFT.
 
-Although the struct shape is unchanged, [`ProposerConsensusData.GetBlockData()`](https://github.com/ssvlabs/ssv-spec/blob/main/types/consensus_data.go#L191-L237)'s per-version switch (Capella → Fulu today) needs a new `DataVersionGloas` arm that unmarshals `DataSSZ` as `Gloas.BeaconBlock`.
+Although the struct shape is unchanged, [`ProposerConsensusData.GetBlockData()`](https://github.com/ssvlabs/ssv-spec/blob/85ee4f32e4fc22bae8aacf837153aab3dcd6620b/types/consensus_data.go#L175-L237)'s per-version switch (Capella → Fulu today) needs a new `DataVersionGloas` arm that unmarshals `DataSSZ` as `Gloas.BeaconBlock`.
 
 Pre-consensus RANDAO flow is unchanged. Post-consensus is unchanged: each operator's `PostConsensusPartialSig` packet carries one `PartialSignatureMessage` over the block root under `DOMAIN_BEACON_PROPOSER`. Publish the signed block via the existing beacon API.
 
