@@ -158,6 +158,8 @@ const (
 )
 ```
 
+`RolePTCCommittee = 7` leaves room for `RoleAggregatorCommittee = 6` from the in-flight ssv-spec [`aggregator-committee`](https://github.com/ssvlabs/ssv-spec/tree/aggregator-committee) refactor, which consolidates `RoleAggregator` and `RoleSyncCommitteeContribution` (gaps at `1` and `3`).
+
 `MapDutyToRunnerRole()` must map `BNRolePTCAttester` to `RolePTCCommittee`. A new `PTCCommitteeDuty` is introduced, reusing the existing `ValidatorDuty`:
 
 ```go
