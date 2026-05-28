@@ -182,7 +182,7 @@ Relevant consensus-spec references:
 
 Under Gloas, `produceBlockV4` replaces the pre-Gloas proposer flow; blinded blocks are removed. The beacon node returns `Gloas.BeaconBlock` on the stateful path (and on any external-build response) or `Gloas.BlockContents` on the stateless self-build path ([beacon-APIs PR #580](https://github.com/ethereum/beacon-APIs/pull/580)).
 
-`ProposerConsensusData` is preserved: its struct shape (`Duty`, `Version`, `DataSSZ []byte`) is unchanged. `DataSSZ` carries the SSZ-encoded `Gloas.BeaconBlock`. For the stateless `BlockContents` variant, the inline envelope, blobs, and KZG proofs returned by the BN are not put through QBFT.
+`ProposerConsensusData` is preserved: its struct shape (`Duty`, `Version`, `DataSSZ []byte`) is unchanged. `DataSSZ` carries the SSZ-encoded `Gloas.BeaconBlock`. The stateless `BlockContents` variant is handled identically: the cluster extracts the block into `DataSSZ` for QBFT; the inline envelope, blobs, and KZG proofs are handled by §6.
 
 Although the struct shape is unchanged, [`ProposerConsensusData.GetBlockData()`](https://github.com/ssvlabs/ssv-spec/blob/85ee4f32e4fc22bae8aacf837153aab3dcd6620b/types/consensus_data.go#L175-L237)'s per-version switch (Capella → Fulu today) needs a new `DataVersionGloas` arm that unmarshals `DataSSZ` as `Gloas.BeaconBlock`.
 
