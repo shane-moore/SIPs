@@ -306,7 +306,7 @@ Operators sign the decided `BlindedExecutionPayloadEnvelope`'s signing root unde
 
 #### Publication
 
-Each operator's BN built a different full envelope; only the operator whose blinded form matched the QBFT decision holds the matching full bytes. That operator constructs `SignedExecutionPayloadEnvelope(full_envelope, reconstructed_sig)` and POSTs it to `/eth/v1/beacon/execution_payload_envelope` (beacon-APIs PR #580). Other operators complete without publishing.
+Each operator's BN built a different full envelope; only the operator whose blinded form matched the QBFT decision holds the matching full bytes. That operator reconstructs the signature and POSTs the signed envelope to `/eth/v1/beacon/execution_payload_envelope` ([beacon-APIs PR #580](https://github.com/ethereum/beacon-APIs/pull/580)); the body depends on the self-build variant (§6 Trigger). For stateless self-build the envelope arrived inline in `BlockContents`, so that operator also holds the matching blobs and KZG proofs and publishes `SignedExecutionPayloadEnvelopeContents` (the `SignedExecutionPayloadEnvelope` plus `blobs` and `kzg_proofs`). For stateful self-build the BN that served the envelope already cached the side data, so a bare `SignedExecutionPayloadEnvelope(full_envelope, reconstructed_sig)` suffices. Other operators complete without publishing.
 
 ## Security Considerations
 
