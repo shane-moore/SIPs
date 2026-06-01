@@ -264,6 +264,8 @@ type BlindedExecutionPayloadEnvelope struct {
 
 Fires on the self-build path only, after the §4 block is signed and published. No pre-consensus phase. Envelope source by self-build variant: stateless self-build returns the envelope inline in `BlockContents`; stateful self-build requires a `GET /eth/v1/validator/execution_payload_envelope/{slot}/{beacon_block_root}` to the same BN that served the §4 block (envelope held server-side keyed by that call).
 
+The duty must target publishing the signed envelope before `get_payload_due_ms()` (the `PAYLOAD_DUE_BPS` 75% cutoff, §3), with margin for gossip to reach PTC beacon nodes before then. The §4 block is already out by the attestation deadline (§1), so the round has the intervening block-to-payload gap to work in. An envelope that misses the cutoff makes honest PTC validators vote `payload_present = False`, which can leave the next slot building on the empty parent (§3); this is the bounded missed-envelope degradation in Security Considerations.
+
 #### Roles and constants
 
 ```go
@@ -332,9 +334,9 @@ Because the `proposer_preferences` gossip topic accepts only the first valid mes
 
 Late `dependent_root` change tightens the re-emission window. Under non-finality, a deep reorg affecting the end-of-p-2 dependent block forces the proposer to re-emit `SignedProposerPreferences` with the new root; if the re-emission + builder-bid gossip round-trip cannot complete before the proposal deadline, the slot falls through to §6 self-build with a compressed envelope-signing window.
 
-### Envelope-QBFT leader failure misses the slot's envelope
+### Envelope-QBFT leader failure or late publication misses the slot's envelope
 
-If the §6 envelope-QBFT leader fails between decide and publish, the slot's envelope is missed (only the leader holds matching full envelope bytes; see §6 Publication). PTC records `payload_present = FALSE` (§3); proposer forfeits the payload reward. No worse than the no-envelope-signing baseline for the self-build path.
+The slot's envelope is missed if the §6 envelope-QBFT leader fails between decide and publish (only the leader holds matching full envelope bytes; see §6 Publication), or if the envelope-QBFT round completes after `get_payload_due_ms()` so the signed envelope reaches PTC validators too late to observe before the cutoff. In either case PTC records `payload_present = FALSE` (§3); proposer forfeits the payload reward. No worse than the no-envelope-signing baseline for the self-build path.
 
 ## Open Questions / Upstream Watchlist
 
