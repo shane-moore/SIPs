@@ -287,7 +287,7 @@ type EnvelopeConsensusData struct {
 
 #### QBFT proposal
 
-Each operator constructs `BlindedExecutionPayloadEnvelope` from its local BN's envelope (`PayloadRoot = hash_tree_root(envelope.payload)`, other fields verbatim) and proposes the SSZ-encoded form in `EnvelopeConsensusData.DataSSZ`. Leader: the §4 block-QBFT decided leader (the only operator whose BN built the on-chain block, so the only one whose envelope's `BeaconBlockRoot` matches §4 and can pass value check).
+Each operator constructs `BlindedExecutionPayloadEnvelope` from its local BN's envelope (`PayloadRoot = hash_tree_root(envelope.payload)`, other fields verbatim) and proposes the SSZ-encoded form in `EnvelopeConsensusData.DataSSZ`. Only an operator whose BN built the §4-decided block holds an envelope with a matching `BeaconBlockRoot` and a `PayloadRoot` backed by real full bytes, so only such an operator originates a publishable value in the first round. The QBFT value is the blinded envelope, so under round-change a later-round leader can re-propose that justified value without holding the full bytes; the decided value, and which operator can publish it, are independent of who leads the deciding round (publication is by content-match, see Publication).
 
 #### Value check
 
@@ -334,9 +334,9 @@ Because the `proposer_preferences` gossip topic accepts only the first valid mes
 
 Late `dependent_root` change tightens the re-emission window. Under non-finality, a deep reorg affecting the end-of-p-2 dependent block forces the proposer to re-emit `SignedProposerPreferences` with the new root; if the re-emission + builder-bid gossip round-trip cannot complete before the proposal deadline, the slot falls through to §6 self-build with a compressed envelope-signing window.
 
-### Envelope-QBFT leader failure or late publication misses the slot's envelope
+### Matching-envelope operator failure or late publication misses the slot's envelope
 
-The slot's envelope is missed if the §6 envelope-QBFT leader fails between decide and publish (only the leader holds matching full envelope bytes; see §6 Publication), or if the envelope-QBFT round completes after `get_payload_due_ms()` so the signed envelope reaches PTC validators too late to observe before the cutoff. In either case PTC records `payload_present = FALSE` (§3); proposer forfeits the payload reward. No worse than the no-envelope-signing baseline for the self-build path.
+The slot's envelope is missed if the operator whose envelope blinds to the §6-decided value (the only one holding the matching full bytes; see §6 Publication) fails before publishing it, or if the envelope-QBFT round completes after `get_payload_due_ms()` so the signed envelope reaches PTC validators too late to observe before the cutoff. In either case PTC records `payload_present = FALSE` (§3); proposer forfeits the payload reward. No worse than the no-envelope-signing baseline for the self-build path.
 
 ## Open Questions / Upstream Watchlist
 
