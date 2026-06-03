@@ -26,7 +26,7 @@ Gloas changes validator duties in ways that break a few current SSV assumptions:
 Key design choices and why:
 
 - **New `GloasBeaconVote` carries `AttestationDataIndex`.** In Gloas, `AttestationData.Index` is BN-supplied and part of the signed attestation root, so it must travel through QBFT consensus data rather than being reconstructed locally. A dedicated Gloas-only type keeps pre-Gloas `BeaconVote` wire bytes unchanged.
-- **PTC is a committee-scoped runner.** `PayloadAttestationData` is validator-independent (like `BeaconVote`), while each PTC-assigned validator still needs its own BLS signature and submission object. This matches the existing committee-runner pattern from `committee_consensus.md`.
+- **PTC is a validator-scoped, non-QBFT runner.** Each operator signs the `PayloadAttestationData` its own beacon node observed at the 75% cutoff; partial signatures group by signing root and reconstruct when one reaches threshold, the same one-round shape as `ProposerPreferences` (§5). A PTC vote is one beacon node's observation, not a value to negotiate, so QBFT would only add round-trips that risk the late-slot deadline (§3).
 - **Proposer-preferences is validator-scoped and non-QBFT.** The per-validator `fee_recipient` is configured cluster-side and is cluster-consistent in practice; `target_gas_limit` lives in operator config (ssv-spec default `DefaultGasLimit = 30_000_000` in `types/beacon_types.go`, with runtime overrides; operators in a cluster must agree byte-for-byte on the value used at signing time, same as the existing validator-registration flow). Operators independently derive the full `ProposerPreferences`, partial signatures are grouped by signing root, and reconstruction succeeds only when one signing root reaches threshold. The registration-like one-round partial-sig-and-submit flow from `voluntary_exit.md` fits directly.
 - **Block QBFT remains scoped to the `Gloas.BeaconBlock`.** `ProposerConsensusData.data_ssz` carries the block SSZ, matching today's shape. Distributed signing of `SignedExecutionPayloadEnvelope` for the self-build path is covered by a separate companion QBFT duty (§6), keyed by the block QBFT's decided block root.
 - **Envelope QBFT uses a blinded envelope shape.** §6's duty runs QBFT over `BlindedExecutionPayloadEnvelope` (`payload` → `payload_root: Root`), whose hash tree root equals the full envelope's. Keeps QBFT messages bounded (~few hundred bytes vs hundreds of KB to ~MB).
@@ -124,25 +124,19 @@ Each validator signs a `PayloadAttestationData` object carrying `beacon_block_ro
 
 At the start of each epoch, SSV should fetch PTC duties for the next epoch and refresh them on duty-dependent-root changes. Because PTC duty responses may be sparse and incomplete, a changed duty-dependent root for an epoch should replace the cached duties for that epoch rather than being merged.
 
-Two coincident 75%-of-slot deadlines bound the runner: `PAYLOAD_ATTESTATION_DUE_BPS = 75%` (consensus-spec-recommended broadcast time, leaving ~25% for gossip propagation and aggregation by the next slot's proposer) and `PAYLOAD_DUE_BPS = 75%` (validator-side observation cutoff after which envelopes do not flip `payload_present` to `True` per the Gloas validator spec). `PayloadAttestationData` values (`payload_present`, `blob_data_available`, `beacon_block_root`) evolve throughout the slot as envelopes and blobs are observed, so runners should target fetch and QBFT start near 75%, as late as the DVT round budget permits, to maximize the chance `payload_present` reflects the envelope actually arriving. The consensus specs do not prescribe a start time. QBFT and broadcast may complete after 75% and still propagate; within-slot overruns reach fork-choice via the wire path but risk missing block inclusion. Past slot end the message is dropped (gossip IGNORE and fork-choice wire REJECT when `data.slot != current_slot`), and each missed vote chips at the `PTC_SIZE/2` threshold that governs whether fork-choice extends the payload.
+Two distinct deadlines bound the runner, both nominally at 75% of the slot. `PAYLOAD_DUE_BPS = 75%` is the validator-side observation cutoff: `payload_present` is the predicate "a `SignedExecutionPayloadEnvelope` for `beacon_block_root` was seen before the cutoff" (a first-seen-time test, not a "present now" query), so an envelope arriving after the cutoff does not flip it to `True`. `PAYLOAD_ATTESTATION_DUE_BPS = 75%` is the consensus-spec-recommended broadcast time, a soft target leaving ~25% of the slot for propagation to the next slot's proposer. The hard deadline is slot end (100%): a slot-N payload attestation is accepted on the wire only while `data.slot == current_slot` and is consulted by fork choice only in slot N+1, so nothing consumes a slot-N vote during the [75%, 100%] window. Each operator therefore evaluates `PayloadAttestationData` (`payload_present`, `blob_data_available`, `beacon_block_root`) from its beacon node at the 75% cutoff and runs its partial-signature round in the otherwise-free [75%, 100%] window. Broadcast may complete after 75% and still propagate; past slot end the message is dropped (gossip IGNORE and fork-choice wire REJECT when `data.slot != current_slot`), and each missed vote chips at the `PTC_SIZE/2` threshold that governs whether fork choice extends the payload.
 
-The beacon node also emits SSE events a runner may consume as a push trigger for when to fetch and start QBFT, instead of polling toward the cutoff: `execution_payload_gossip` and `execution_payload` fire when a `SignedExecutionPayloadEnvelope` passes `execution_payload`-topic gossip validation and when it is imported into fork choice, and `execution_payload_available` fires once the node has verified the payload and blobs are available and ready for payload attestation ([beacon-APIs event stream](https://github.com/ethereum/beacon-APIs/blob/v5.0.0-alpha.2/apis/eventstream/index.yaml)). These are timing signals only: `payload_present` and `blob_data_available` still come from the BN-computed `PayloadAttestationData` at fetch time, bounded by the same cutoff.
+The beacon node also emits SSE events a runner may consume as a push trigger for when to evaluate its observation, instead of polling toward the cutoff: `execution_payload_gossip` and `execution_payload` fire when a `SignedExecutionPayloadEnvelope` passes `execution_payload`-topic gossip validation and when it is imported into fork choice, and `execution_payload_available` fires once the node has verified the payload and blobs are available and ready for payload attestation ([beacon-APIs event stream](https://github.com/ethereum/beacon-APIs/blob/v5.0.0-alpha.2/apis/eventstream/index.yaml)). These are timing signals only: `payload_present` and `blob_data_available` still come from the BN-computed `PayloadAttestationData` at fetch time, bounded by the same cutoff.
 
-There is no pre-consensus phase. Operator QBFT instances agree on a stripped `PayloadAttestationVote`:
+There is no pre-consensus phase and no QBFT round. Each operator evaluates `PayloadAttestationData` from its own beacon node at the 75% cutoff and signs that observation directly; there is no leader and no negotiated value. Because a per-validator BLS signature reconstructs only from partial signatures over byte-identical data, each operator pins its 75% `PayloadAttestationData` snapshot (with `slot` taken from the duty) and validates and aggregates incoming partial signatures against exactly that signing root.
 
-```go
-type PayloadAttestationVote struct {
-    BeaconBlockRoot   phase0.Root `ssz-size:"32"`
-    PayloadPresent    bool
-    BlobDataAvailable bool
-}
-```
+An operator that has seen no beacon block for the slot abstains (submits nothing), matching the Gloas validator spec. Otherwise, for each of its local PTC-assigned validators it produces one partial signature over the full `PayloadAttestationData` under `DOMAIN_PTC_ATTESTER` (domain epoch = `compute_epoch_at_slot(duty.slot)`), because each `PayloadAttestationMessage` on the wire ships a validator-specific signature verified against that validator's pubkey. All partial signatures broadcast together in a single `PartialSignatureMessages` container with `Type = PTCAttesterPartialSig` (the runner role `RolePTCAttester` is the dispatch discriminator). Each operator accumulates peers' partial signatures over its own frozen root; when signatures over identical `PayloadAttestationData` reach the reconstruction threshold, it BLS-aggregates and submits one `PayloadAttestationMessage(validator_index, data, signature)` per validator to the beacon node, inside the [75%, 100%] window. Operators on a minority observation never reach threshold and contribute nothing, a non-slashable silent miss (see Security Considerations). The cluster therefore emits, per validator, the observation a threshold of its operators converged on, rather than a single leader's.
 
-Slot is omitted because it is already pinned by the QBFT instance (same pattern as `BeaconVote`); only the observation-dependent fields need consensus. One QBFT round covers all of the cluster's local PTC-assigned validators for the slot (committee-scoped, same as `CommitteeRunner` and `AggregatorCommitteeRunner`), rather than one QBFT per validator. As a consequence, a cluster's local PTC validators in a slot contribute one shared observation to the network-wide tally rather than independent ones, which is a deliberate liveness choice of this committee-scoped design. The False-vote / missed-vote equivalence holds for `payload_present` only: `blob_data_available = False` votes are additionally counted in `should_build_on_full` via `payload_data_availability(..., available=False)`, so the cluster's shared observation carries slightly different fork-choice weight across the two boolean fields. At signing time, each operator reconstructs the full `PayloadAttestationData` (slot injected from the duty) and produces one partial signature per local PTC validator under `DOMAIN_PTC_ATTESTER` (domain epoch = `compute_epoch_at_slot(duty.slot)`), because each `PayloadAttestationMessage` on the wire ships a validator-specific signature verified against that validator's pubkey. All partial signatures broadcast together in a single `PartialSignatureMessages` container with `Type = PostConsensusPartialSig` (reused from the existing post-consensus path; the runner role `RolePTCCommittee` is the dispatch discriminator). After reconstruction, one `PayloadAttestationMessage` per validator is submitted to the beacon node.
+The False-vote / missed-vote equivalence holds for `payload_present` only: `blob_data_available = False` votes are additionally counted in `should_build_on_full` via `payload_data_availability(..., available=False)`, so the cluster's observation carries slightly different fork-choice weight across the two boolean fields.
 
-The value check should reject zero `BeaconBlockRoot` (a null root cannot refer to a real block). `PayloadPresent` and `BlobDataAvailable` are observation-dependent booleans and are not compared against the local BN view (see Security Considerations); `BeaconBlockRoot` is likewise not checked against the BN's head for the slot, nor for slot-binding to `duty.slot`, matching existing `BeaconVote.BlockRoot` handling (see Security Considerations: the runner accepts that a slot-mismatched root yields a message the network ignores). PTC attestations are not in the beacon chain slashing predicate, so no slashability call is required.
+There is no QBFT value check: there is no leader-proposed value to validate, since each operator signs only the observation it made (one that saw no block abstains, as above). The off-slot-root concern that a leader-decided root would raise does not arise, because each operator signs the block it observed for `duty.slot`, on-slot by construction. PTC attestations are not in the beacon chain slashing predicate, so no slashability call is required.
 
-This SIP adds a new beacon role `BNRolePTCAttester` and a matching runner role `RolePTCCommittee`.
+This SIP adds a new beacon role `BNRolePTCAttester`, a matching runner role `RolePTCAttester`, and a new `PartialSigMsgType` `PTCAttesterPartialSig`.
 
 ```go
 // types/beacon_types.go additions
@@ -159,22 +153,19 @@ const (
 // types/runner_role.go additions 
 const (
     // ... existing values ...
-    RolePTCCommittee RunnerRole = 7
+    RolePTCAttester RunnerRole = 7
+)
+
+// types/partial_sig_message.go additions
+const (
+    // ... existing values ...
+    PTCAttesterPartialSig PartialSigMsgType = 7
 )
 ```
 
 `RunnerRole` values `1` and `3` are reserved for backward-compat decoding of pre-consolidation messages.
 
-`MapDutyToRunnerRole()` must map `BNRolePTCAttester` to `RolePTCCommittee`. A new `PTCCommitteeDuty` is introduced, reusing the existing `ValidatorDuty`:
-
-```go
-type PTCCommitteeDuty struct {
-    Slot            spec.Slot
-    ValidatorDuties []*ValidatorDuty
-}
-```
-
-`PTCCommitteeDuty` bundles all PTC-selected validators for a given slot under one duty, so one QBFT round on the shared `PayloadAttestationVote` covers all of them rather than running a separate consensus per validator.
+`MapDutyToRunnerRole()` must map `BNRolePTCAttester` to `RolePTCAttester`. PTC reuses the existing `ValidatorDuty`, with one runner instance scoped per PTC-assigned validator (keyed by validator pubkey), the same validator-scoped shape as `ProposerPreferences` (§5). A slot's PTC is `PTC_SIZE` (512) seats selected from that slot's beacon committees, so a cluster typically holds zero or one PTC seat in a given slot; per-validator scoping reuses the single-validator signing path, and committee-style bundling would save almost nothing.
 
 ### 4. Modified Proposer Duty
 
@@ -232,7 +223,7 @@ const (
 // types/partial_sig_message.go additions
 const (
     // ... existing values
-    ProposerPreferencesPartialSig PartialSigMsgType = 7
+    ProposerPreferencesPartialSig PartialSigMsgType = 8
 )
 ```
 
@@ -316,13 +307,13 @@ Each operator's BN built a different full envelope; only the operator whose blin
 
 Under Gloas, `AttestationData.Index` is part of the attestation data root and therefore part of the double-vote slashing predicate. `GloasBeaconVoteValueCheckF` must reconstruct the full Gloas `AttestationData` with `Index` from the decided `GloasBeaconVote.AttestationDataIndex` before calling `IsAttestationSlashable`; otherwise an operator could sign `index=0` and `index=1` for the same `(source, target)` in the same slot without the predicate tripping.
 
-### Payload-status fields are trusted from the QBFT leader
+### Gloas `AttestationData.Index` is trusted from the QBFT leader
 
-Value checks for Gloas `AttestationData.Index` and PTC `payload_present` / `blob_data_available` do not require the decided value to match each operator's local BN view. Requiring local agreement would fail QBFT rounds whenever operators observe the envelope at slightly different times around the 75% deadline, a normal gossip-lag scenario. Accepted tradeoff: a malicious QBFT leader can push a value contrary to the cluster's majority BN observation. This matches existing ssv-spec treatment of `BeaconVote.BlockRoot`, which is trusted from the leader because BNs legitimately diverge on fork-choice head.
+The Gloas `AttestationData.Index` value check (§2) does not require the QBFT-decided value to match each operator's local BN view. Requiring local agreement would fail QBFT rounds whenever operators observe fork-choice state at slightly different times around the deadline, a normal gossip-lag scenario. Accepted tradeoff: a malicious QBFT leader can push a value contrary to the cluster's majority BN observation. This matches existing ssv-spec treatment of `BeaconVote.BlockRoot`, which is trusted from the leader because BNs legitimately diverge on fork-choice head.
 
-### PTC `beacon_block_root` slot-binding is left to gossip, not enforced in the value check
+### PTC reconstruction is honest-convergence, not consensus
 
-Gloas gossip adds an IGNORE-level check that the block at `data.beacon_block_root` is at `data.slot` ([`p2p-interface.md`](https://github.com/ethereum/consensus-specs/blob/e34dbbb330c14cdd6e62b6f78817d70041abd5b5/specs/gloas/p2p-interface.md#L346-L347)). SSV takes `BeaconBlockRoot` from the QBFT-decided value while `data.slot` comes from the duty, so a faulty leader could propose an off-slot root. The runner does not check `block.slot == duty.slot`: it holds no local block, and validating the slot would require an extra beacon-node query on the late-slot hot path. A slot-mismatched root is signed but ignored by peers, wasting that round's PTC votes; this is bounded, non-slashable, and equals a missed vote (the False-vote / missed-vote equivalence above), and arises only under leader fault.
+PTC runs no QBFT (§3): each operator signs the `PayloadAttestationData` its own beacon node observed at the 75% cutoff, and a per-validator signature reconstructs only when a threshold of operators converged on byte-identical data. There is no leader to push a value contrary to the cluster's observation, and an operator can only ever vote its own honest observation. The cost is liveness rather than safety: when operators' beacon nodes split across observations near the cutoff (envelope-arrival or head jitter at the `MAXIMUM_GOSSIP_CLOCK_DISPARITY` boundary, or operators on diverged forks), no observation may reach threshold and the cluster's vote for that validator is a silent miss. That miss is non-slashable and its only effect is the foregone contribution to the `PTC_SIZE/2` fork-choice tally, bounded by SSV's PTC seat share. The off-slot-root case that Gloas gossip guards with an IGNORE-level `block.slot == data.slot` check ([`p2p-interface.md`](https://github.com/ethereum/consensus-specs/blob/e34dbbb330c14cdd6e62b6f78817d70041abd5b5/specs/gloas/p2p-interface.md#L346-L347)) cannot arise here: each operator signs the block it observed for `duty.slot`.
 
 ### Config divergence silently disables trustless external builder bids
 
