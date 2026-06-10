@@ -12,6 +12,7 @@ Validator client related changes via ePBS:
 3. the new Payload Timeliness Committee (PTC)
 4. the Gloas proposer flow using `produceBlockV4`. The SSV cluster signs the `Gloas.BeaconBlock` in §4 and, on the self-build path, signs `SignedExecutionPayloadEnvelope` as a companion QBFT duty (§6).
 5. the new `SignedProposerPreferences` message must be submitted if the node operator wants to be able to select block bids received over p2p
+6. the existing validator-registration duty is deprecated at the Gloas fork, its purpose replaced by `SignedProposerPreferences` (§5)
 
 ## Motivation
 
@@ -192,7 +193,7 @@ Relevant consensus-spec references:
 - [`proposer_preferences` gossip topic](https://github.com/ethereum/consensus-specs/blob/e34dbbb330c14cdd6e62b6f78817d70041abd5b5/specs/gloas/p2p-interface.md#proposer_preferences)
 - [`execution_payload_bid` gossip validation](https://github.com/ethereum/consensus-specs/blob/e34dbbb330c14cdd6e62b6f78817d70041abd5b5/specs/gloas/p2p-interface.md#execution_payload_bid)
 
-Under Gloas, each proposer broadcasts `SignedProposerPreferences` on the `proposer_preferences` p2p topic for future proposal slots within the proposer lookahead (the current epoch up to `MIN_SEED_LOOKAHEAD` epochs ahead). The signed `ProposerPreferences` carries `dependent_root`, `proposal_slot`, `validator_index`, `fee_recipient`, and `target_gas_limit`. `dependent_root` pins the proposer-lookahead epoch's seed via `get_proposer_dependent_root(state, epoch)`; operators populate it from the `dependent_root` returned by [`GET /eth/v2/validator/duties/proposer/{epoch}`](https://github.com/ethereum/beacon-APIs/blob/v5.0.0-alpha.2/apis/validator/duties/proposer.v2.yaml) for the proposal-slot's epoch. Builders listen to this topic and use a proposer's preferences to construct `execution_payload_bid` objects for that proposer's slots. This replaces the pre-Gloas out-of-band relay-registration mechanism, which is gone along with blinded blocks.
+Under Gloas, each proposer broadcasts `SignedProposerPreferences` on the `proposer_preferences` p2p topic for future proposal slots within the proposer lookahead (the current epoch up to `MIN_SEED_LOOKAHEAD` epochs ahead). The signed `ProposerPreferences` carries `dependent_root`, `proposal_slot`, `validator_index`, `fee_recipient`, and `target_gas_limit`. `dependent_root` pins the proposer-lookahead epoch's seed via `get_proposer_dependent_root(state, epoch)`; operators populate it from the `dependent_root` returned by [`GET /eth/v2/validator/duties/proposer/{epoch}`](https://github.com/ethereum/beacon-APIs/blob/v5.0.0-alpha.2/apis/validator/duties/proposer.v2.yaml) for the proposal-slot's epoch. Builders listen to this topic and use a proposer's preferences to construct `execution_payload_bid` objects for that proposer's slots. This replaces the pre-Gloas out-of-band relay-registration mechanism, which is gone along with blinded blocks; the `ValidatorRegistration` duty is deprecated accordingly (end of this section).
 
 Gossip enforces the handshake at the `execution_payload_bid` topic: each bid requires a matching `SignedProposerPreferences` for its `(proposal_slot, dependent_root)` (otherwise IGNORE'd, not forwarded). The bid `fee_recipient` must match the preference (mismatch is REJECT'd), and the bid `gas_limit` must be EIP-1559-compatible with the proposer's `target_gas_limit` via `is_gas_limit_target_compatible` (incompatible is IGNORE'd). Without this duty broadcast, bids for the validator's slots don't propagate across the network, leaving the BN with no trustless external builder options to return.
 
@@ -228,6 +229,10 @@ const (
 ```
 
 `MapDutyToRunnerRole()` must map `BNRoleProposerPreferences` to `RoleProposerPreferences`.
+
+#### Deprecation of the `ValidatorRegistration` duty
+
+Gloas removes every protocol consumer of `SignedValidatorRegistrationV1`: builders source `fee_recipient` and `target_gas_limit` from the `proposer_preferences` topic instead, the relay path that consumed registrations is gone with blinded blocks (§4), and the Gloas builder-API workstream itself deprecates `ValidatorRegistrationV1` in favor of `ProposerPreferences` ([builder-specs PR #138](https://github.com/ethereum/builder-specs/pull/138), in flight; see also [builder-specs issue #150](https://github.com/ethereum/builder-specs/issues/150)). This SIP therefore deprecates the duty at the fork: operators emit no `BNRoleValidatorRegistration` duties for epochs at or after `GLOAS_FORK_EPOCH`, message validation treats `ValidatorRegistrationPartialSig` messages for Gloas-or-later slots as invalid, and pre-Gloas slots are unchanged. `BNRoleValidatorRegistration`, `RoleValidatorRegistration`, and `ValidatorRegistrationPartialSig` keep their numeric values, reserved for pre-Gloas operation and backward-compat decoding, the same treatment as `RunnerRole` values `1` and `3` (§3). Where a beacon node sources self-build `fee_recipient` / `target_gas_limit` after the fork is BN configuration outside the SSV protocol, and it needs no distributed signature: registration signatures existed to authenticate proposers to untrusted relays (`prepare_beacon_proposer` carries only `fee_recipient` today, and a validator-facing preferences submission endpoint is on the watchlist).
 
 ### 6. New Duty: Envelope Signing (Self-Build Path)
 
