@@ -251,7 +251,7 @@ To bound QBFT message size, the cluster runs QBFT over a blinded form that subst
 ```go
 type BlindedExecutionPayloadEnvelope struct {
     PayloadRoot           phase0.Root // == hash_tree_root(envelope.payload)
-    ExecutionRequests     electra.ExecutionRequests
+    ExecutionRequests     gloas.ExecutionRequests // Gloas 5-list container: adds builder_deposits and builder_exits (EIP-8282)
     BuilderIndex          uint64
     BeaconBlockRoot       phase0.Root
     ParentBeaconBlockRoot phase0.Root
