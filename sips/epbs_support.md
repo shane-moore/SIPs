@@ -240,7 +240,7 @@ Relevant consensus-spec references:
 
 - [`ExecutionPayloadEnvelope` container](https://github.com/ethereum/consensus-specs/blob/bd454cb0a6cff1b210ea9de208803df4d9966655/specs/gloas/beacon-chain.md#executionpayloadenvelope)
 - [`execution_payload` gossip topic (carries `SignedExecutionPayloadEnvelope`)](https://github.com/ethereum/consensus-specs/blob/bd454cb0a6cff1b210ea9de208803df4d9966655/specs/gloas/p2p-interface.md#new-execution_payload)
-- [`POST /eth/v1/beacon/execution_payload_envelopes` endpoint](https://github.com/ethereum/beacon-APIs/pull/580) (beacon-APIs PR #580, not yet merged)
+- [`POST /eth/v1/beacon/execution_payload_envelopes` endpoint](https://github.com/ethereum/beacon-APIs/pull/580)
 
 On the self-build path (`bid.builder_index == BUILDER_INDEX_SELF_BUILD` per [EIP-7732](https://eips.ethereum.org/EIPS/eip-7732)), the proposer signs `SignedExecutionPayloadEnvelope` after block publication. The SSV cluster runs a second QBFT round to produce this signature.
 
