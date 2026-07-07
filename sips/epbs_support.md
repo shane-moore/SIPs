@@ -272,10 +272,10 @@ The duty must target publishing the signed envelope before `get_payload_due_ms()
 ```go
 // types/beacon_types.go
 var DomainBeaconBuilder = [4]byte{0x0B, 0x00, 0x00, 0x00}
-const BNRoleEnvelopeBuilder BeaconRole = 9
+const BNRoleEnvelopeProposer BeaconRole = 9
 
 // types/runner_role.go
-const RoleEnvelopeBuilder RunnerRole = 9
+const RoleEnvelopeProposer RunnerRole = 9
 
 type EnvelopeConsensusData struct {
     Duty    ValidatorDuty
@@ -284,7 +284,7 @@ type EnvelopeConsensusData struct {
 }
 ```
 
-`MapDutyToRunnerRole()` must map `BNRoleEnvelopeBuilder` to `RoleEnvelopeBuilder`. Post-consensus reuses `PostConsensusPartialSig`; the runner role discriminates routing.
+`MapDutyToRunnerRole()` must map `BNRoleEnvelopeProposer` to `RoleEnvelopeProposer`. Post-consensus reuses `PostConsensusPartialSig`; the runner role discriminates routing.
 
 #### QBFT proposal
 
