@@ -204,6 +204,8 @@ The flow matches the existing `ValidatorRegistration` / `VoluntaryExit` shape: v
 
 Trigger: at each epoch boundary, and on duty-dependent-root changes for any epoch in the proposer lookahead, iterate local validators and emit one duty per slot returned by `get_upcoming_proposal_slots(state, validator_index)`. In the `MIN_SEED_LOOKAHEAD` epochs immediately before `GLOAS_FORK_EPOCH`, this SIP requires operators to emit preferences for any local-validator proposal slots in the first Gloas epoch. Emission during the first Gloas epoch itself would also be gossip-valid for slots later in that epoch, but slots early in the epoch leave effectively no post-fork emission time, and builders need a validator's preference before they can construct and gossip bids for its slot; pre-fork emission covers both, aligning with the spec's *"Proposers SHOULD broadcast their preferences in the epoch before the fork"* recommendation in `p2p-interface.md`. The `proposer_preferences` gossip topic accepts only the first valid message per `(dependent_root, proposal_slot, validator_index)` tuple; emission-timing implications are covered in Security Considerations. If the proposer lookahead for an epoch changes, or `dependent_root` changes for an epoch already in the lookahead, cached duties for that epoch are replaced and a new preference is emitted. Because `dependent_root` is part of the gossip identity above, the new preference is a distinct tuple rather than a replacement of the prior one.
 
+The duty's slot, carried in the `PartialSignatureMessages` envelope, is `proposal_slot` itself: one runner per proposal slot, matching ssv-spec's requirement that a partial-signature message's slot equal its duty's slot (`validatePartialSigMsgForSlot`). At emission time that slot is up to the proposer lookahead in the future, and a re-emission for the same slot carries a new signing root; both effects need dedicated message-validation rules, specified in §7.
+
 This SIP adds a new beacon role `BNRoleProposerPreferences`, a matching runner role `RoleProposerPreferences`, and a new `PartialSigMsgType` `ProposerPreferencesPartialSig`.
 
 ```go
@@ -308,6 +310,38 @@ Operators sign the decided `BlindedExecutionPayloadEnvelope`'s signing root unde
 #### Publication
 
 Each operator's BN built a different envelope; only the operator whose blinded form matched the QBFT decision can publish. That operator reconstructs the signature and POSTs to `/eth/v1/beacon/execution_payload_envelopes` (merged via [beacon-APIs #580](https://github.com/ethereum/beacon-APIs/pull/580)); the body variant is selected by the required `Eth-Execution-Payload-Blinded` header. For stateless self-build the envelope arrived inline in `BlockContents`, so that operator holds the matching full payload, blobs, and KZG proofs and publishes `SignedExecutionPayloadEnvelopeContents` (header `false`). For stateful self-build the operator publishes `SignedBlindedExecutionPayloadEnvelope` (header `true`) to the same BN that produced the §4 block: the decided blinded envelope plus the reconstructed signature, from which that BN reconstructs the full envelope out of its production-time cache (any other BN lacks the cache and rejects the publish with a 400). Other operators complete without publishing.
+
+### 7. SSV Message Validation
+
+SSV pubsub message validation is content-agnostic: it never decodes the signed beacon object, so it enforces only metadata. This section pins those rules for the three new roles and the deprecated one; all structural, signature, and topic rules for existing roles apply unchanged. Classifications follow the existing convention: REJECT penalizes the sending peer while IGNORE drops without forwarding.
+
+All three new roles are validator-scoped, like `RoleValidatorRegistration` and `RoleVoluntaryExit`: the `MessageID` carries the validator public key, routing reuses the cluster's existing subnet (no new topic), and each `PartialSignatureMessages` container carries at most one entry (the non-committee packet rule, REJECT above 1). Partial-signature type must match the role (REJECT on mismatch), and consensus messages are REJECT'd for the two non-QBFT roles, joining the existing registration/exit rule.
+
+| Role (wire) | Consensus messages | Partial-sig type; count per (signer, slot) | Message slot | Earliness allowance | Lateness TTL | Duty assignment check | Duty limit per epoch |
+|---|---|---|---|---|---|---|---|
+| `RolePTCAttester` (7) | REJECT | `PTCAttesterPartialSig` (7); 1 | PTC attestation slot | none | 3 slots | PTC assignment at slot (IGNORE) | 2 (IGNORE) |
+| `RoleProposerPreferences` (8) | REJECT | `ProposerPreferencesPartialSig` (8); up to 4 distinct signing roots, repeat of a seen root = duplicate | `proposal_slot` | `(1 + MIN_SEED_LOOKAHEAD) * SLOTS_PER_EPOCH` slots | 2 slots | proposer assignment at `proposal_slot` (IGNORE) | `SLOTS_PER_EPOCH` (IGNORE) |
+| `RoleEnvelopeProposer` (9) | QBFT: 1 proposal / prepare / commit / round-change per (signer, slot, round); round cut-off 2 | `PostConsensusPartialSig` (0); 1 | proposal slot | none | 3 slots | proposer assignment at slot (IGNORE) | `SLOTS_PER_EPOCH` (IGNORE) |
+
+Lateness TTL uses the existing deadline convention: a message is late once received after `slot_start(slot + TTL)` plus the clock-error margin. Duty limits count distinct duty slots per (signer, epoch of the message slot). Duty assignment checks apply only once the local node knows the duties for the message slot's epoch (a not-yet-fetched epoch is tolerated rather than IGNORE'd, since the message can legitimately arrive first).
+
+Derivations, per row:
+
+- **PTC (7).** One partial-signature round, no pre/post split: `PTCAttesterPartialSig` is the only type, once per duty. The vote is consumed within its own slot and included at slot + 1 (§3), so the short non-committee TTL applies. The duty limit follows from `compute_ptc` drawing members exclusively from `get_beacon_committee(state, slot, i)`: a validator belongs to exactly one slot's beacon committees per epoch, so the honest bound is one PTC duty per validator per epoch, plus the +1 reorg margin the existing registration and aggregation limits already use. Multiple PTC seats within one slot are still one duty: the validator signs one `PayloadAttestationData`, and seat multiplicity lives in the aggregation bits.
+- **ProposerPreferences (8).**
+  - *Earliness:* the message slot is `proposal_slot` (§5), up to the proposer lookahead in the future at emission, hence the allowance.
+  - *Lateness:* the tight TTL drops stale preferences as replays.
+  - *Slot-advance exempt:* a signer holds its whole lookahead at once, so a lower-slot message is a concurrent duty, not a stale one (lateness is its past bound).
+  - *Dedup:* the base one-per-(signer, slot) rule gains a bounded exception for distinct signing roots at one proposal slot; a repeat of a seen root is a duplicate (same-peer REJECT, relayed IGNORE, the existing two-tier handling), and a distinct root past the cap is IGNORE'd (rate-limiting, not a provable violation). Those extra roots come from preference-input changes between emissions, notably a `dependent_root` shift under reorg (§5); the cap is policy headroom, and the epoch-boundary batch never touches it since each proposal slot is its own key.
+  - *Duty limit:* at most one proposal per slot.
+- **EnvelopeProposer (9).** Standard QBFT validation applies (leader round-robin, justification rules, one message per type per round); the round cut-off is the proposer-class value, and the §6 timing makes anything higher moot: the duty's window ends at the `PAYLOAD_DUE_BPS` cutoff (~a quarter slot, §6), which fits the first round plus at most one round-change. Post-consensus is the only partial-signature phase (no pre-consensus analog to RANDAO). The duty exists only for the cluster's own proposal slots, so the proposer-assignment check applies, and the duty limit mirrors the preferences bound.
+
+Epoch-aware fork gates, a new rule class. Both are REJECT because they are slot-scoped rather than wall-clock-scoped: the gated condition is carried in the message itself, so no honest ordering race can produce it.
+
+| Rule | Classification | Explanation |
+|---|---|---|
+| Role in {7, 8, 9} and `epoch(msg.slot) < GLOAS_FORK_EPOCH` | REJECT | These duties do not exist before the fork. §5's required pre-fork emission carries post-fork `proposal_slot` values by construction, so it passes this gate with no special case. |
+| `RoleValidatorRegistration` (4) and `epoch(msg.slot) >= GLOAS_FORK_EPOCH` | REJECT | §5 deprecates the duty at the fork; honest registrations are always stamped with pre-fork slots. Pre-Gloas slots remain valid and unchanged. |
 
 ## Security Considerations
 
