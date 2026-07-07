@@ -112,6 +112,8 @@ Pre-Gloas slots continue to run `BeaconVoteValueCheckF()` unchanged.
 
 The `BNRoleAggregator` duty (handled by the aggregator-committee runner) fetches aggregated attestations from the Beacon API's aggregate-attestation endpoint with `attestation_data_root` as an input. Implementations must compute that root from the BN-supplied `AttestationData` (including its Gloas `index`).
 
+`AggregatorCommitteeConsensusData.Version` is part of the QBFT-decided value, so operators must stamp it identically: use `DataVersionGloas` at Gloas slots (as §4 does for `ProposerConsensusData`). The aggregate stays Electra-shaped; Gloas changes only `AttestationData.Index` semantics, not the aggregate container.
+
 ### 3. New Duty: Payload Timeliness Committee (PTC) Attestation
 
 Relevant consensus-spec references:
