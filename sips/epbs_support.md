@@ -185,6 +185,8 @@ Under Gloas, `produceBlockV4` (`GET /eth/v4/validator/blocks/{slot}`, merged via
 
 Although the struct shape is unchanged, [`ProposerConsensusData.GetBlockData()`](https://github.com/ssvlabs/ssv-spec/blob/85ee4f32e4fc22bae8aacf837153aab3dcd6620b/types/consensus_data.go#L175-L237)'s per-version switch (Capella → Fulu today) needs a new `DataVersionGloas` arm that unmarshals `DataSSZ` as `Gloas.BeaconBlock`.
 
+The decided value's `Version` selects how `DataSSZ` is decoded (`Gloas.BeaconBlock` when `Version >= DataVersionGloas`), and `Version` is leader-supplied. An operator MUST reject any decided value whose `Version` does not equal the fork scheduled at `duty.Slot`. Honest proposers always stamp `Version == fork(duty.Slot)`, so this rejects no honest value.
+
 Pre-consensus RANDAO flow is unchanged. Post-consensus is unchanged: each operator's `PostConsensusPartialSig` packet carries one `PartialSignatureMessage` over the block root under `DOMAIN_BEACON_PROPOSER`. Publish the signed block as `Gloas.SignedBeaconBlock` via the existing block-publish endpoint.
 
 **Envelope signing.** Under Gloas, the validator signs `SignedExecutionPayloadEnvelope` only in the self-build path (`bid.builder_index == BUILDER_INDEX_SELF_BUILD`, per [EIP-7732](https://eips.ethereum.org/EIPS/eip-7732)); in the external-build path the builder signs and publishes its own envelope. Distributed signing of `SignedExecutionPayloadEnvelope` for the self-build path is specified in §6.
