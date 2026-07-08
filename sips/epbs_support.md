@@ -26,7 +26,7 @@ Gloas changes validator duties in ways that break a few current SSV assumptions:
 
 Key design choices and why:
 
-- **New `GloasBeaconVote` carries `AttestationDataIndex`.** In Gloas, `AttestationData.Index` is BN-supplied and part of the signed attestation root, so it must travel through QBFT consensus data rather than being reconstructed locally. A dedicated Gloas-only type keeps pre-Gloas `BeaconVote` wire bytes unchanged.
+- **`BeaconVote` gains `AttestationDataIndex` at the Gloas fork.** In Gloas, `AttestationData.Index` is BN-supplied and part of the signed attestation root, so it must travel through QBFT consensus data rather than being reconstructed locally. The pre-Gloas encoding stays frozen for pre-Gloas slots, so the two are mutually rejecting on length.
 - **PTC is a validator-scoped, non-QBFT runner.** Each operator signs the `PayloadAttestationData` its own beacon node observed at the 75% broadcast mark, validates incoming partial signatures against its own derived signing root, and reconstructs when that root reaches threshold, the same one-round shape as `ProposerPreferences` (§5). A PTC vote is one beacon node's observation, not a value to negotiate, so QBFT would only add round-trips that risk the late-slot deadline (§3).
 - **Proposer-preferences is validator-scoped and non-QBFT.** The per-validator `fee_recipient` is configured cluster-side and is cluster-consistent in practice; `target_gas_limit` is operator-configured, with a client default when unset; operators in a cluster must agree byte-for-byte on the value used at signing time, the same convergence requirement as the existing validator-registration flow. Operators independently derive the full `ProposerPreferences` and validate incoming partial signatures against their own derived signing root; reconstruction succeeds only when a quorum of operators converge on one signing root. The registration-like one-round partial-sig-and-submit flow from `voluntary_exit.md` fits directly.
 - **Block QBFT remains scoped to the `Gloas.BeaconBlock`.** `ProposerConsensusData.data_ssz` carries the block SSZ, matching today's shape. Distributed signing of `SignedExecutionPayloadEnvelope` for the self-build path is covered by a separate companion QBFT duty (§6), keyed by the block QBFT's decided block root.
@@ -74,19 +74,17 @@ SSV currently omits `AttestationData.Index` from `BeaconVote` and fills it local
 
 #### Required change
 
-A new `GloasBeaconVote` struct mirrors `BeaconVote` plus an `AttestationDataIndex` field, matching the `phase0.CommitteeIndex` (a `uint64` alias) type of `AttestationData.Index` in consensus specs so reconstruction is a direct field assignment. Gloas-era QBFT instances decide on `GloasBeaconVote`; pre-Gloas instances continue to decide on the existing `BeaconVote`, whose SSZ layout is unchanged. A separate type (rather than extending `BeaconVote` in place) is the cleanest way to make pre-Gloas and Gloas wire bytes mutually-rejecting on length mismatch, since SSZ derives do not support fork-conditional fields. The restricted Gloas value space (`0` = `EMPTY`, `1` = `FULL` for non-same-slot attestations; `0` for same-slot) is enforced in the value check below, not at the type level.
-
-After the Gloas fork epoch has activated on all networks and pre-Gloas slots are no longer reachable in normal operation, a follow-up SIP can retire `BeaconVote` and rename `GloasBeaconVote` back to `BeaconVote`.
+At the Gloas fork, `BeaconVote` is extended with an `AttestationDataIndex` field (`phase0.CommitteeIndex`, a `uint64` alias matching `AttestationData.Index`, so reconstruction is a direct field assignment). The pre-Gloas 3-field encoding stays frozen for pre-Gloas slots; decoders select by fork, and the two encodings are mutually rejecting on length (fixed-size SSZ, 112 vs 120 bytes). Implementations MAY realize the transition as two concrete types. The restricted Gloas value space (`0` = `EMPTY`, `1` = `FULL` for non-same-slot attestations; `0` for same-slot) is enforced in the value check below, not at the type level.
 
 ```go
-// Existing (ssv-spec types/consensus_data.go); unchanged
+// Pre-Gloas encoding (ssv-spec types/consensus_data.go); frozen for pre-Gloas slots
 type BeaconVote struct {
     BlockRoot phase0.Root `ssz-size:"32"`
     Source    *phase0.Checkpoint
     Target    *phase0.Checkpoint
 }
 
-// New (Gloas only)
+// Gloas encoding; implementations may keep a distinct type through the transition
 type GloasBeaconVote struct {
     BlockRoot            phase0.Root        `ssz-size:"32"`
     Source               *phase0.Checkpoint
