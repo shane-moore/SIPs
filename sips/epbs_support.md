@@ -136,7 +136,7 @@ An operator that has seen no beacon block for the slot abstains (submits nothing
 
 False votes and missed votes are equivalent in the payload-extension tally (`should_extend_payload` counts only `True` votes toward the threshold), but not for the next proposer's parent choice: explicit `False` majorities on either field steer the proposer off the full parent in `should_build_on_full` (via `payload_timeliness(..., timely=False)` and `payload_data_availability(..., available=False)`), weight a missed vote does not carry.
 
-There is no QBFT value check: there is no leader-proposed value to validate, since each operator signs only the observation it made (one that saw no block abstains, as above). The off-slot-root concern that a leader-decided root would raise does not arise, because each operator signs the block it observed for `duty.slot`, on-slot by construction. PTC attestations are not in the beacon chain slashing predicate, so no slashability call is required.
+There is no QBFT and therefore no value check. PTC attestations are not in the beacon chain slashing predicate, so no slashability call is required.
 
 This SIP adds a new beacon role `BNRolePTCAttester`, a matching runner role `RolePTCAttester`, and a new `PartialSigMsgType` `PTCAttesterPartialSig`.
 
