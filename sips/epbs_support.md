@@ -369,7 +369,7 @@ Because the `proposer_preferences` gossip topic accepts only the first valid mes
 
 ### Late `dependent_root` change near the proposal slot may leave the slot with no matching bid
 
-Late `dependent_root` change tightens the re-emission window. Under non-finality, a deep reorg affecting the end-of-p-2 dependent block forces the proposer to re-emit `SignedProposerPreferences` with the new root; if the re-emission + builder-bid gossip round-trip cannot complete before the proposal deadline, the slot falls through to [§6](#6-new-duty-envelope-signing-self-build-path) self-build with a compressed envelope-signing window.
+A late `dependent_root` change tightens the re-emission window but does not block it: the changed root forms a new `(dependent_root, proposal_slot, validator_index)` tuple, which gossip accepts (first-message pinning binds a fixed tuple), so the risk here is the remaining time budget, not gossip rejection. Under non-finality, a deep reorg affecting the end-of-p-2 dependent block forces the proposer to re-emit `SignedProposerPreferences` with the new root; if the re-emission + builder-bid gossip round-trip cannot complete before the proposal deadline, the slot falls through to [§6](#6-new-duty-envelope-signing-self-build-path) self-build with a compressed envelope-signing window.
 
 ### Matching-envelope operator failure or late publication misses the slot's envelope
 
