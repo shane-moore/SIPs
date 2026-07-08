@@ -108,7 +108,7 @@ Pre-Gloas slots continue to run `BeaconVoteValueCheckF()` unchanged.
 
 #### Implementation note: aggregation path
 
-The `BNRoleAggregator` duty (handled by the aggregator-committee runner) fetches aggregated attestations from the Beacon API's aggregate-attestation endpoint with `attestation_data_root` as an input. Implementations must compute that root from the BN-supplied `AttestationData` (including its Gloas `index`).
+The `BNRoleAggregator` duty (handled by the aggregator-committee runner) fetches aggregated attestations from the Beacon API's aggregate-attestation endpoint with `attestation_data_root` as an input. Implementations must compute that root over the full Gloas `AttestationData` reconstructed from the decided `GloasBeaconVote` (including `AttestationDataIndex`), rather than from a locally reconstructed pre-Gloas shape; a root computed without the decided `index` matches no aggregate.
 
 `AggregatorCommitteeConsensusData.Version` is part of the QBFT-decided value, so operators must stamp it identically: use `DataVersionGloas` at Gloas slots (as §4 does for `ProposerConsensusData`). The aggregate stays Electra-shaped; Gloas changes only `AttestationData.Index` semantics, not the aggregate container.
 
