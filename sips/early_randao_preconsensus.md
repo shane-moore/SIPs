@@ -94,6 +94,8 @@ Shares that are neither promoted nor normally accepted MUST NOT be fed to signat
 
 Unchanged. The reconstructed reveal is a per-epoch value: an implementation MAY serve a proposal at slot `Y` from a reconstruction built via shares stamped for slot `X` of the same epoch, provided every contributing share was promoted or normally accepted. Wire messages remain per-slot-stamped.
 
+"Promoted or normally accepted" is evaluated at receipt or promotion time against the receiver's then-current duty view and is never re-evaluated at consumption. The cross-slot case is reachable two ways: a validator with two proposals in the same epoch, and a reorg that moves a proposal from `X` to `Y` after `X`-stamped shares were accepted under the pre-reorg view; the allowance exists so a completed early collection survives the shift. The signed object is identical for `X` and `Y` (`SSZUint64(epoch)`), so reuse has no cryptographic effect; implementations that key collection by signing root exercise it naturally, and implementations that require exact-slot consumption remain conformant.
+
 **Test expectations**
 
 Cross-client vectors MUST cover:
@@ -101,6 +103,7 @@ Cross-client vectors MUST cover:
 - earliness boundary at exactly `EARLY_RANDAO_LEAD * SLOT_DURATION + EARLY_RANDAO_CLOCK_TOLERANCE` (accept) and beyond (IGNORE);
 - Unknown-epoch retention, promotion, and deletion; Known-unassigned IGNORE;
 - the stale-Known reorg path: a share IGNOREd under a pre-reorg Known view is not retained, an identical later copy is dropped by the seen-cache, and a subsequent duty-view update does not resurrect it;
+- per-epoch reuse: shares stamped `X` accepted under a duty-at-`X` view, the duty moves to `Y` in the same epoch, and the reconstruction serves the proposal at `Y`;
 - the two-direction ordering exemption with proposals at consecutive slots for one validator;
 - occupied-key two-tier duplicates and distinct-bytes REJECT;
 - the eligibility predicate at fork boundaries (first `EARLY_RANDAO_LEAD` slots of a fork epoch ineligible);
