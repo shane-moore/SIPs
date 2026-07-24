@@ -16,14 +16,14 @@ Gloas moves the attestation deadline to 1/4 slot. RANDAO pre-consensus (sign, go
 
 **Rationale & Design Goals**
 
-- No new duty: RANDAO always has an in-slot consumer (the Proposer duty), and a separate duty would still need the in-slot pre-consensus as its fallback. This differs from `ProposerPreferences`, which must reconstruct before the slot and is mutable.
+- No new duty: RANDAO always has an in-slot consumer (the Proposer duty), and a separate duty would still need the in-slot pre-consensus as its fallback. This differs from `ProposerPreferences` (defined in the ePBS SIP, [#94](https://github.com/ssvlabs/SIPs/pull/94)), which must reconstruct before the slot and is mutable.
 - The 2-slot window is chosen for operational margin, not gossip latency. The window is the fork-pinned receiver rule; the emission moment inside it is producer policy, tunable post-fork without a protocol change.
 - The per-(signer, slot) duplicate limit stays 1. Each logical partial has exactly one valid byte encoding, gossip message identifiers are content-derived, and gossip layers deduplicate before validation, so a second copy either never reaches validation or is the receiver's first copy.
 - Because gossip layers never unmark a seen message, an IGNORE of an early partial permanently discards that operator's share for the window. The Unknown-duty retention rule and the dedicated clock tolerance exist to keep honest shares out of that failure class.
 
 **Specification**
 
-Notation: `S` is a proposal slot; `slot_start(s)`, `SLOT_DURATION`, `epoch(s)` as usual; `fork_at_slot(s)` maps a slot to its scheduled SSV fork. REJECT penalizes the delivering peer; IGNORE drops without forwarding or penalty.
+Notation: `S` is a proposal slot; `slot_start(s)` and `epoch(s)` as usual; `SLOT_DURATION` is the network's beacon-chain seconds-per-slot (unchanged at Gloas, which alters only intra-slot timing); `fork_at_slot(s)` maps a slot to its scheduled SSV fork. REJECT penalizes the delivering peer; IGNORE drops without forwarding or penalty.
 
 | Constant | Value |
 | -------- | ----- |
@@ -38,7 +38,7 @@ A qualifying randao partial MUST satisfy all of:
 - Proposer-role `MessageID`; type `RandaoPartialSig`; exactly one `PartialSignatureMessage` entry;
 - `slot` = the proposal slot `S`; signed object `SSZUint64(epoch(S))` under `DOMAIN_RANDAO`, domain epoch `epoch(S)`;
 - canonical SSZ; deterministic BLS share signature; deterministic RSA (PKCS#1 v1.5) operator signature; exactly one outer signer, equal to the embedded operator ID;
-- eligibility predicate: `fork_at_slot(S - EARLY_RANDAO_LEAD) == fork_at_slot(S)` and `epoch(S) >= GLOAS_FORK_EPOCH`.
+- eligibility predicate: `fork_at_slot(S - EARLY_RANDAO_LEAD) == fork_at_slot(S)` and `epoch(S) >= GLOAS_FORK_EPOCH` (defined in the ePBS SIP, [#94](https://github.com/ssvlabs/SIPs/pull/94)).
 
 The predicate is a pure function of `S`, evaluated identically by producers and receivers, never re-evaluated against wall-clock time. Proposals in the first `EARLY_RANDAO_LEAD` slots of any SSV fork epoch are ineligible by construction. Containers violating the canonical form fall to existing structural rules (REJECT). Messages failing the predicate, and all non-randao messages, keep today's validation unchanged.
 
