@@ -1,8 +1,10 @@
 | Author | Title | Category | Status | Dependency SIP | Date |
 | ------ | ----- | -------- | ------ | -------------- | ---- |
-| Shane Moore | Early RANDAO Pre-Consensus Emission | Core | draft | ePBS (EIP-7732) Support | 2026-07-23 |
+| Shane Moore | Early RANDAO Pre-Consensus Emission | Core | draft | [ePBS (EIP-7732) Support (#94)](https://github.com/ssvlabs/SIPs/pull/94) | 2026-07-23 |
 
 [Discussion](https://github.com/ssvlabs/SIPs/discussions/100)
+
+Depends on the ePBS SIP (currently [PR #94](https://github.com/ssvlabs/SIPs/pull/94)); per [SIP-0](sip0.md), this SIP cannot move to last-call before that SIP is approved, and is rejected if it is rejected (unless changed to remove the dependency).
 
 **Summary**
 
