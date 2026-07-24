@@ -74,6 +74,8 @@ inclusive on the accept side; strictly greater is IGNORE. This replaces the gene
 
 Receivers SHOULD hold next-epoch proposer duties by the tail of each epoch.
 
+A Known view made stale by a boundary-adjacent reorg (including a provisional next-epoch view) IGNOREs an honest early share without retention. This loss class is intentional: the share is not recoverable (the in-slot re-emission is byte-identical, absorbed by the origin's publish-side deduplication and, from a restarted origin, by the receiver's seen-cache), and the cost is bounded by the round-change path, the same residual class as the round-change case in Security Considerations. Retention deliberately excludes Known-and-not-assigned; retaining it would remove the duty-fetch-failure precondition from the quarantine-exhaustion attack and would require re-evaluating the buffer on every duty-view change. Exposure is transient: receiver views converge within a slot or two of a reorg under normal operation (per-slot re-polling or dependent-root-triggered refetch).
+
 **Unknown-duty retention (IGNORE-AND-RETAIN)**
 
 A message reaching the duty check in the Unknown state is retained locally before the gossip verdict IGNORE is returned: not forwarded, no penalty, but kept so the seen-cache mark cannot permanently discard it.
@@ -98,6 +100,7 @@ Cross-client vectors MUST cover:
 
 - earliness boundary at exactly `EARLY_RANDAO_LEAD * SLOT_DURATION + EARLY_RANDAO_CLOCK_TOLERANCE` (accept) and beyond (IGNORE);
 - Unknown-epoch retention, promotion, and deletion; Known-unassigned IGNORE;
+- the stale-Known reorg path: a share IGNOREd under a pre-reorg Known view is not retained, an identical later copy is dropped by the seen-cache, and a subsequent duty-view update does not resurrect it;
 - the two-direction ordering exemption with proposals at consecutive slots for one validator;
 - occupied-key two-tier duplicates and distinct-bytes REJECT;
 - the eligibility predicate at fork boundaries (first `EARLY_RANDAO_LEAD` slots of a fork epoch ineligible);
