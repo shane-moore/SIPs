@@ -8,7 +8,7 @@ Depends on the ePBS SIP (currently [PR #94](https://github.com/ssvlabs/SIPs/pull
 
 **Summary**
 
-Operators may emit their existing block-proposal RANDAO partial signature up to 2 slots before the proposal slot, so the cluster reconstructs `randao_reveal` before the slot starts instead of inside the post-Gloas ~3s block-production budget. No new duty, role, message kind, domain, topic, or container: the existing Proposer-duty `RandaoPartialSig` message is emitted earlier, stamped with the proposal slot as today. Changes are confined to message-validation timing rules plus a bounded receive-side buffer. Activates at the Gloas-aligned SSV fork; the dependency on the ePBS SIP is activation coupling only.
+Operators may emit their existing block-proposal RANDAO partial signature up to 2 slots before the proposal slot, so the cluster reconstructs `randao_reveal` before the slot starts instead of inside the post-Gloas ~3s block-production budget. No new duty, role, message kind, domain, topic, or container: the existing Proposer-duty `RandaoPartialSig` message is emitted earlier, stamped with the proposal slot as today. Changes are confined to message-validation timing, ordering, and duty-handling rules plus a bounded receive-side buffer. Activates at `GLOAS_FORK_EPOCH`, the same Ethereum gate the ePBS SIP uses for its own validation rules; the dependency on the ePBS SIP is activation coupling only.
 
 **Motivation**
 
@@ -38,9 +38,9 @@ A qualifying randao partial MUST satisfy all of:
 - Proposer-role `MessageID`; type `RandaoPartialSig`; exactly one `PartialSignatureMessage` entry;
 - `slot` = the proposal slot `S`; signed object `SSZUint64(epoch(S))` under `DOMAIN_RANDAO`, domain epoch `epoch(S)`;
 - canonical SSZ; deterministic BLS share signature; deterministic RSA (PKCS#1 v1.5) operator signature; exactly one outer signer, equal to the embedded operator ID;
-- eligibility predicate: `fork_at_slot(S - EARLY_RANDAO_LEAD) == fork_at_slot(S)` and `epoch(S) >= GLOAS_FORK_EPOCH` (defined in the ePBS SIP, [#94](https://github.com/ssvlabs/SIPs/pull/94)).
+- eligibility predicate: `S >= EARLY_RANDAO_LEAD`, `fork_at_slot(S - EARLY_RANDAO_LEAD) == fork_at_slot(S)`, and `epoch(S) >= GLOAS_FORK_EPOCH` (the Ethereum Gloas fork epoch, as used by the ePBS SIP, [#94](https://github.com/ssvlabs/SIPs/pull/94)).
 
-The predicate is a pure function of `S`, evaluated identically by producers and receivers, never re-evaluated against wall-clock time. Proposals in the first `EARLY_RANDAO_LEAD` slots of any SSV fork epoch are ineligible by construction. Containers violating the canonical form fall to existing structural rules (REJECT). Messages failing the predicate, and all non-randao messages, keep today's validation unchanged.
+The predicate is a pure function of `S`, evaluated identically by producers and receivers, never re-evaluated against wall-clock time. Activation is Ethereum-gated by `epoch(S) >= GLOAS_FORK_EPOCH`, matching the ePBS SIP's own validation gating. `fork_at_slot` refers to the SSV fork schedule; the equality conjunct is window-boundary protection, not an activation gate: proposals in the first `EARLY_RANDAO_LEAD` slots of any SSV fork activation epoch are ineligible by construction, and the `S >= EARLY_RANDAO_LEAD` conjunct excludes the first `EARLY_RANDAO_LEAD` slots at genesis. Containers violating the canonical form fall to existing structural rules (REJECT); BLS-share validity is not evaluated during message validation (see Message validation). Messages failing the predicate, and all non-randao messages, keep today's validation unchanged.
 
 **Producer behavior**
 
@@ -116,7 +116,8 @@ Cross-client vectors MUST cover:
 - full-capacity eviction with the incoming candidate winning and losing the comparison;
 - Known completeness: a complete fetched proposer schedule is Known; a view filtered to a local validator subset is not, and must not IGNORE an honest share as Known-unassigned;
 - an operator-authenticated share whose BLS signature is invalid is discarded at consumption and contributes to no reconstructed reveal; reconstruction still succeeds from a valid threshold of honest shares;
-- the eligibility predicate at fork boundaries (first `EARLY_RANDAO_LEAD` slots of a fork epoch ineligible);
+- the eligibility predicate at genesis and later fork boundaries (slots below `EARLY_RANDAO_LEAD` and the first `EARLY_RANDAO_LEAD` slots of a fork epoch ineligible);
+- activation gating: `epoch(S)` immediately before `GLOAS_FORK_EPOCH` is ineligible; at a non-genesis `GLOAS_FORK_EPOCH` with no SSV fork scheduled there, eligible from the epoch's first slot (a genesis `GLOAS_FORK_EPOCH` is covered by the slots-below-`EARLY_RANDAO_LEAD` vector above); with an SSV fork scheduled there, its first `EARLY_RANDAO_LEAD` slots are ineligible;
 - multi-fault precedence: a structurally valid message failing both operator-signature verification and a non-retaining contextual check (e.g. invalid signature plus Known-unassigned, or invalid signature plus too-early) may produce either the contextual verdict or REJECT, but is never retained, accepted, forwarded, collected, or state-mutating;
 - invalid operator signature with an Unknown duty view: REJECT, never retained;
 - restart cases, late mesh join, cross-epoch stamps.
