@@ -56,9 +56,11 @@ Operators that never emit early remain fully conformant.
 
 **Message validation**
 
-Rule order: structural and canonical-form checks, then signatures, then the rules below. Validation state (duplicate counts, slot high-water marks) mutates only on acceptance or promotion, never on IGNORE.
+Validation of a potential Early RANDAO message begins with the structural and canonical-form checks, which MUST run first; a structurally and canonically valid randao container satisfying the eligibility predicate is an Early RANDAO candidate, and the rules below apply to candidates only (all other messages keep today's validation unchanged). For a candidate, implementations MAY order operator-signature verification and the non-mutating contextual checks below (timing, slot ordering, duty assignment, duplicate limits) according to local denial-of-service policy, and MAY short-circuit on a contextual verdict that neither retains nor accepts the message. Any outcome that retains, accepts, forwards, feeds signature collection, or mutates ordinary validation state MUST first pass operator-signature verification; in particular, a candidate failing it under an Unknown duty view is REJECTed, never retained. If a candidate fails both operator-signature verification and a non-retaining contextual check, either the contextual verdict or the signature-verification REJECT is conformant. Validation state (duplicate counts, signer state, slot high-water marks, and epoch counters) mutates only on acceptance or promotion, never on IGNORE.
 
-*Earliness.* A receiver MUST accept a qualifying message's timing iff
+Checks are staged: operator-signature verification gates retention, acceptance, forwarding, and state mutation; BLS-share validity gates consumption. A candidate is fully qualifying only once every applicable check has passed; honest producers emit qualifying messages by construction.
+
+*Earliness.* A receiver MUST accept a candidate's timing iff
 
 ```text
 slot_start(msg.slot) - local_now <= EARLY_RANDAO_LEAD * SLOT_DURATION + EARLY_RANDAO_CLOCK_TOLERANCE
@@ -66,12 +68,12 @@ slot_start(msg.slot) - local_now <= EARLY_RANDAO_LEAD * SLOT_DURATION + EARLY_RA
 
 inclusive on the accept side; strictly greater is IGNORE. This replaces the generic clock tolerance for this rule only. Lateness is unchanged (existing Proposer-role TTL against `msg.slot`). All other message classes keep their existing allowances.
 
-*Slot ordering.* Qualifying randao partials are exempt from the per-(operator, `MessageID`) highest-seen-slot rule in both directions: they MUST NOT be rejected for a slot below the high-water mark, and they MUST NOT advance the high-water mark applied to other message classes on the same `MessageID` (randao shares its `MessageID` with the proposal's consensus and post-consensus traffic). The exemption applies only after the qualifying-message checks pass; earliness, lateness, the duplicate limit of 1, and canonical form bound these messages instead.
+*Slot ordering.* Candidate randao partials are exempt from the per-(operator, `MessageID`) highest-seen-slot rule in both directions: they MUST NOT be rejected for a slot below the high-water mark, and they MUST NOT advance the high-water mark applied to other message classes on the same `MessageID` (randao shares its `MessageID` with the proposal's consensus and post-consensus traffic). Final acceptance still requires the remaining qualifying-message checks; earliness, lateness, the duplicate limit of 1, and canonical form bound these messages instead.
 
 *Duty assignment.* Tri-state on the receiver's proposer-duty view for `epoch(msg.slot)`:
 
-- Known (a successfully completed fetch for the epoch is cached; an empty result is Known) and assigned at exactly `msg.slot`: accept.
-- Known and not assigned: IGNORE. Never REJECT (receiver views can be stale or re-orged).
+- Known (a successfully completed fetch for the epoch is cached; an empty result is Known) and assigned at exactly `msg.slot`: the duty-assignment check passes.
+- Known and not assigned: the duty-assignment verdict is IGNORE, never REJECT (receiver views can be stale or re-orged); an independently failing rule may still determine the final verdict under the ordering allowance above.
 - Unknown (no successfully completed fetch cached; failures count as Unknown): IGNORE-AND-RETAIN, below.
 
 Receivers SHOULD hold next-epoch proposer duties by the tail of each epoch.
@@ -82,7 +84,7 @@ A Known view made stale by a boundary-adjacent reorg (including a provisional ne
 
 A message reaching the duty check in the Unknown state is retained locally before the gossip verdict IGNORE is returned: not forwarded, no penalty, but kept so the seen-cache mark cannot permanently discard it.
 
-- Admission: passed every rule except duty assignment, and `epoch(msg.slot)` is Unknown.
+- Admission: operator-signature verification and every applicable message-validation rule other than duty assignment have passed, and `epoch(msg.slot)` is Unknown.
 - Key: (operator, validator, `msg.slot`), at most 1 entry. Global capacity `MAX_QUARANTINED_MESSAGES` per node. Sizing: an entry is one signed message (~0.5 KB), bounding memory at ~2 MB. A receiver MAY scope retention to committees it participates in (retained shares are only ever consumed locally; promotion cannot retroactively forward).
 - Occupied key, distinct bytes: existing two-tier duplicate rule (REJECT from the same delivering peer, IGNORE otherwise); original retained; duplicate-count and ordering state not mutated; quota not recharged.
 - Eviction when full: greatest `|msg.slot - current_slot|` first; ties by larger `msg.slot`, then higher validator index, then higher operator ID, then lexicographically greater message identifier.
@@ -92,7 +94,7 @@ A message reaching the duty check in the Unknown state is retained locally befor
 
 Honest demand cannot approach the cap. At any instant only ~7 slot stamps are admissible (the 3-slot proposer lateness TTL behind, `EARLY_RANDAO_LEAD` ahead, the current slot, and tolerances), and an honest entry additionally requires a real proposer duty in an epoch Unknown to the receiver. That bounds honest entries by one SSV proposal per slot network-wide, times at most 13 committee operators, times the ~7-slot span: under 100 entries. The bound is independent of node size (admission is not scoped to local validators, so demand tracks the network's proposal rate) and of outage duration (the admissible window slides and expiry drains it). Reaching the cap requires fabricated slot stamps from a real signer (see Security Considerations).
 
-Shares that are neither promoted nor normally accepted MUST NOT be fed to signature collection or any cache.
+Shares that are neither promoted nor normally accepted MUST NOT be fed to signature collection or any downstream reconstruction cache.
 
 **Reconstruction and consumption**
 
@@ -110,7 +112,10 @@ Cross-client vectors MUST cover:
 - per-epoch reuse: shares stamped `X` accepted under a duty-at-`X` view, the duty moves to `Y` in the same epoch, and the reconstruction serves the proposal at `Y`;
 - the two-direction ordering exemption with proposals at consecutive slots for one validator;
 - occupied-key two-tier duplicates and distinct-bytes REJECT;
+- an operator-authenticated share whose BLS signature is invalid is discarded at consumption and contributes to no reconstructed reveal; reconstruction still succeeds from a valid threshold of honest shares;
 - the eligibility predicate at fork boundaries (first `EARLY_RANDAO_LEAD` slots of a fork epoch ineligible);
+- multi-fault precedence: a structurally valid message failing both operator-signature verification and a non-retaining contextual check (e.g. invalid signature plus Known-unassigned, or invalid signature plus too-early) may produce either the contextual verdict or REJECT, but is never retained, accepted, forwarded, collected, or state-mutating;
+- invalid operator signature with an Unknown duty view: REJECT, never retained;
 - restart cases, late mesh join, cross-epoch stamps.
 
 Before mainnet activation guidance, testnet measurement MUST quantify early-share miss incidence at duty start (stratified by emission lead, receiver restarts, partition duration, leader round) and MUST demonstrate round-2 viability under Gloas timing, meaning block publication before the post-Gloas useful-block deadline.
@@ -121,5 +126,5 @@ Before mainnet activation guidance, testnet measurement MUST quantify early-shar
 - After the gossip message-cache window (a few seconds), a stable origin cannot re-deliver a missed early share; receiver restarts and partitions are correlated events. A restart also drops unpromoted retained entries, since this SIP does not mandate persisting the retention buffer. Residual: a live round-1 leader without a reconstruction forces a round change. Mitigations: later emission inside the window, the unconditional in-slot emission (restarted-origin recovery), optional non-normative persistence of received shares, and the mandatory testnet measurement above.
 - Early reconstruction widens the third-party reaction window between reveal knowability and block publication from roughly 2-4 s to up to 25 s, enabling adaptive bribery, censorship, or targeted DoS when withholding the proposal favors an adversary (one randao bit per affected slot, compounding across slots). Bounded by the existing single-proposal grinding bound; narrowable operationally via later emission, without a protocol change.
 - An attacker meeting the retention preconditions (a committee operator sharing more than `MAX_QUARANTINED_MESSAGES` divided by the ~7 admissible slot stamps ≈ 600 validators with the victim, while the victim's view of the stamped epoch is Unknown; milder outages raise the threshold) can fill the retention capacity and evict legitimate entries; cost is bounded to the evicted shares (round-change path).
-- No amplification: unverifiable messages are never forwarded. Authentication cost is unchanged (operator signature at validation, BLS at consumption). A signer emitting two distinct containers for one (signer, slot) is provably misbehaving and attributable via its operator signature.
+- No unauthenticated amplification: messages failing operator-signature verification are never forwarded or retained; authentication cost is unchanged (operator signature at validation, BLS at consumption). An operator-authenticated share whose BLS signature proves invalid at consumption is attributable and MUST be discarded without contributing to a reconstructed reveal. A signer emitting two distinct containers for one (signer, slot) is provably misbehaving and attributable via its operator signature.
 - No slashing surface: the randao object is not slashable and is a pure function of public data; early signing changes when it is signed, not what.
