@@ -70,11 +70,13 @@ inclusive on the accept side; strictly greater is IGNORE. This replaces the gene
 
 *Slot ordering.* Candidate randao partials are exempt from the per-(operator, `MessageID`) highest-seen-slot rule in both directions: they MUST NOT be rejected for a slot below the high-water mark, and they MUST NOT advance the high-water mark applied to other message classes on the same `MessageID` (randao shares its `MessageID` with the proposal's consensus and post-consensus traffic). Final acceptance still requires the remaining qualifying-message checks; earliness, lateness, the duplicate limit of 1, and canonical form bound these messages instead.
 
-*Duty assignment.* Tri-state on the receiver's proposer-duty view for `epoch(msg.slot)`:
+*Duty assignment.* Tri-state, evaluated per candidate against the receiver's proposer-duty view for `epoch(msg.slot)` and the message's validator:
 
-- Known (a successfully completed fetch of the epoch's complete proposer schedule is cached; a locally filtered subset does not constitute a Known view) and assigned at exactly `msg.slot`: the duty-assignment check passes.
+- Known (a cached view is authoritative for the candidate; see below) and assigned at exactly `msg.slot`: the duty-assignment check passes.
 - Known and not assigned: the duty-assignment verdict is IGNORE, never REJECT (receiver views can be stale or re-orged); an independently failing rule may still determine the final verdict under the ordering allowance above.
-- Unknown (no successfully completed fetch cached; failures count as Unknown): IGNORE; retained only if admitted under the rules below.
+- Unknown (otherwise): IGNORE; retained only if admitted under the rules below.
+
+A cached view is authoritative for a candidate iff a successfully completed proposer-duty fetch for `epoch(msg.slot)` is cached whose requested coverage includes the message's validator, evaluated against the receiver's current registry state: a fetch that predates the receiver's most recent validator-set change is not authoritative for validators affected by that change. A reorg does not revoke authority: a view made stale by a reorg remains Known, with the loss class described below. A complete-schedule fetch covers every validator, but a response without exactly `SLOTS_PER_EPOCH` distinct in-epoch slots is a fetch failure. A registry-filtered fetch covers exactly the validators it requested, even when the filtered result is empty; in particular, a view covering only the operator's own validators MUST NOT yield a not-assigned verdict for claimants outside it.
 
 Receivers SHOULD hold next-epoch proposer duties by the tail of each epoch.
 
@@ -84,16 +86,16 @@ A Known view made stale by a boundary-adjacent reorg (including a provisional ne
 
 A candidate whose proposer-duty view is Unknown and that meets the admission conditions below is considered for retention under the occupied-key and capacity rules below; if admitted, it is retained locally before the gossip verdict IGNORE is returned: not forwarded, no penalty, but kept so the seen-cache mark cannot permanently discard it.
 
-- Admission: operator-signature verification and every applicable message-validation rule other than duty assignment have passed, and `epoch(msg.slot)` is Unknown.
+- Admission: operator-signature verification and every applicable message-validation rule other than duty assignment have passed, and the candidate's duty view is Unknown.
 - Key: (operator, validator, `msg.slot`), at most 1 entry. Global capacity `MAX_QUARANTINED_MESSAGES` per node. Sizing: an entry is one signed message (~0.5 KB), bounding memory at ~2 MB. A receiver MAY scope retention to committees it participates in (retained shares are only ever consumed locally; promotion cannot retroactively forward).
 - Occupied key, byte-identical content: IGNORE; the original entry and its metadata are kept unchanged.
 - Occupied key, distinct bytes: existing two-tier duplicate rule (REJECT from the same delivering peer, IGNORE otherwise); original retained; duplicate-count and ordering state not mutated; quota not recharged.
 - Eviction when full: the incoming candidate competes with the stored entries; the greatest `|msg.slot - current_slot|` is evicted first, ties by larger `msg.slot`, then higher validator index, then higher operator ID (the key fields make further ties impossible). A candidate that loses the comparison is not admitted (IGNORE).
 - Expiry: delete an entry once a newly received copy would fail the lateness rule.
-- Promotion: when the epoch's duty fetch completes, each entry is decided immediately: an entry assigned at exactly `msg.slot` becomes a promotion candidate, anything else deletes. A candidate is reprocessed exactly as a newly received message, with all stateful rules applied at reprocessing time; it promotes only if that revalidation succeeds and is deleted otherwise (a normally accepted interim copy for the same (signer, slot) makes the candidate the count-limit duplicate, so it deletes).
+- Promotion: when a newly installed view is authoritative for a retained entry, that entry is decided immediately: an entry assigned at exactly `msg.slot` becomes a promotion candidate, anything else deletes. A candidate is reprocessed exactly as a newly received message, with all stateful rules applied at reprocessing time; it promotes only if that revalidation succeeds and is deleted otherwise (a normally accepted interim copy for the same (signer, slot) makes the candidate the count-limit duplicate, so it deletes).
 - Accounting: the retention quota mutates at retention time; ordinary validation state does not mutate on the IGNORE path.
 
-Honest demand cannot approach the cap. At any instant only ~7 slot stamps are admissible (the 3-slot proposer lateness TTL behind, `EARLY_RANDAO_LEAD` ahead, the current slot, and tolerances), and an honest entry additionally requires a real proposer duty in an epoch Unknown to the receiver. That bounds honest entries by one SSV proposal per slot network-wide, times at most 13 committee operators, times the ~7-slot span: under 100 entries. The bound is independent of node size (admission is not scoped to local validators, so demand tracks the network's proposal rate) and of outage duration (the admissible window slides and expiry drains it). Reaching the cap requires fabricated slot stamps from a real signer (see Security Considerations).
+Honest demand cannot approach the cap. At any instant only ~7 slot stamps are admissible (the 3-slot proposer lateness TTL behind, `EARLY_RANDAO_LEAD` ahead, the current slot, and tolerances), and an honest entry additionally requires a real proposer duty whose duty view at the receiver is Unknown. That bounds honest entries by one SSV proposal per slot network-wide, times at most 13 committee operators, times the ~7-slot span: under 100 entries. The bound is independent of node size (admission is not scoped to local validators, so demand tracks the network's proposal rate) and of outage duration (the admissible window slides and expiry drains it). Reaching the cap requires fabricated slot stamps from a real signer (see Security Considerations).
 
 Shares that are neither promoted nor normally accepted MUST NOT be fed to signature collection or any downstream reconstruction cache.
 
@@ -108,13 +110,13 @@ Unchanged. The reconstructed reveal is a per-epoch value: an implementation MAY 
 Cross-client vectors MUST cover:
 
 - earliness boundary at exactly `EARLY_RANDAO_LEAD * SLOT_DURATION + EARLY_RANDAO_CLOCK_TOLERANCE` (accept) and beyond (IGNORE);
-- Unknown-epoch retention, promotion, and deletion; Known-unassigned IGNORE;
+- Unknown-view retention, promotion, and deletion; Known-unassigned IGNORE;
 - the stale-Known reorg path: a share IGNOREd under a pre-reorg Known view is not retained, an identical later copy is dropped by the seen-cache, and a subsequent duty-view update does not resurrect it;
 - same-epoch duty move: shares stamped `X` accepted under a duty-at-`X` view, the duty moves to `Y` in the same epoch, and the proposal at `Y` completes (served from the `X` reconstruction where the implementation reuses; via the in-slot exchange otherwise);
 - the two-direction ordering exemption with proposals at consecutive slots for one validator;
 - occupied-key duplicates: byte-identical IGNORE-keep-original, distinct-bytes two-tier (same-peer REJECT, otherwise IGNORE);
 - full-capacity eviction with the incoming candidate winning and losing the comparison;
-- Known completeness: a complete fetched proposer schedule is Known; a view filtered to a local validator subset is not, and must not IGNORE an honest share as Known-unassigned;
+- Known coverage: a registry-filtered fetch covering every admissible claimant is authoritative, and a covered validator absent from its result is not-assigned; a view scoped to the operator's own validators is not authoritative for an out-of-coverage claimant and must not IGNORE its honest share as Known-unassigned; a claimant registered after the cached fetch takes the Unknown path until a refresh covers it; a complete-schedule response without exactly `SLOTS_PER_EPOCH` distinct in-epoch slots establishes no view;
 - an operator-authenticated share whose BLS signature is invalid is discarded at consumption and contributes to no reconstructed reveal; reconstruction still succeeds from a valid threshold of honest shares;
 - the eligibility predicate at genesis: slots below `EARLY_RANDAO_LEAD` are ineligible even when `GLOAS_FORK_EPOCH` is 0;
 - activation gating: `epoch(S)` immediately before `GLOAS_FORK_EPOCH` is ineligible; a non-genesis `GLOAS_FORK_EPOCH` is eligible from its first slot, whose emission window starts before the fork, and an SSV fork scheduled anywhere does not change that;
