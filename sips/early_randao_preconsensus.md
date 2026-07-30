@@ -8,7 +8,7 @@ Depends on the ePBS SIP (currently [PR #94](https://github.com/ssvlabs/SIPs/pull
 
 **Summary**
 
-Operators may emit their existing block-proposal RANDAO partial signature up to 2 slots before the proposal slot, so the cluster reconstructs `randao_reveal` before the slot starts instead of inside the post-Gloas ~3s block-production budget. No new duty, role, message kind, domain, topic, or container: the existing Proposer-duty `RandaoPartialSig` message is emitted earlier, stamped with the proposal slot as today. Changes are confined to message-validation timing, ordering, and duty-handling rules plus a bounded receive-side buffer. Activates at `GLOAS_FORK_EPOCH`, the same Ethereum gate the ePBS SIP uses for its own validation rules; the dependency on the ePBS SIP is activation coupling only.
+Operators may emit their existing block-proposal RANDAO partial signature up to 2 slots before the proposal slot, so the cluster reconstructs `randao_reveal` before the slot starts instead of inside the post-Gloas ~3s block-production budget. No new duty, role, message kind, domain, topic, or container: the existing Proposer-duty `RandaoPartialSig` message is emitted earlier, stamped with the proposal slot as today. Changes are confined to message-validation timing, ordering, and duty-handling rules plus a bounded receive-side buffer. The rules activate by target proposal slot `S`: they apply when `epoch(S) >= GLOAS_FORK_EPOCH`, even if the permitted emission window for `S` begins before the fork in wall-clock time. The dependency on the ePBS SIP is activation coupling only.
 
 **Motivation**
 
@@ -17,13 +17,13 @@ Gloas moves the attestation deadline to 1/4 slot. RANDAO pre-consensus (sign, go
 **Rationale & Design Goals**
 
 - No new duty: RANDAO always has an in-slot consumer (the Proposer duty), and a separate duty would still need the in-slot pre-consensus as its fallback. This differs from `ProposerPreferences` (defined in the ePBS SIP, [#94](https://github.com/ssvlabs/SIPs/pull/94)), which must reconstruct before the slot and is mutable.
-- The 2-slot window is chosen for operational margin, not gossip latency. The window is the fork-pinned receiver rule; the emission moment inside it is producer policy, tunable post-fork without a protocol change.
+- The 2-slot value is the maximum earliness receivers MUST support, not a gossip-latency requirement. Producers may emit later within that window, and operators need not emit simultaneously. At a participating receiver, the reveal becomes available once it has collected `2f+1` valid shares, so the latest share needed for quorum determines reconstruction time. Different producer schedules remain interoperable, but later schedules reduce the time saved before block proposal. The window also permits a simple slot-driven producer to make an initial attempt in the `S - 2` slot and retry in `S - 1` if the earlier local publication attempt fails. It does not guarantee a second network delivery after successful publication because byte-identical re-publications are gossip-deduplicated. A longer receiver window would widen reveal and stale-duty exposure without an identified need and would require protocol coordination.
 - The per-(signer, slot) duplicate limit stays 1. Each logical partial has exactly one valid byte encoding, gossip message identifiers are content-derived, and gossip layers deduplicate before validation, so a second copy either never reaches validation or is the receiver's first copy.
 - Because gossip layers never unmark a seen message, an IGNORE of an early partial permanently discards that operator's share for the window. The Unknown-duty retention rule and the dedicated clock tolerance narrow that failure class for honest shares without eliminating it; the residual cases are documented in *Duty assignment* (stale-`Known` reorg), the retention admission rule (refresh-pending losses), and Security Considerations.
 
 **Specification**
 
-Notation: `S` is a proposal slot; `slot_start(s)` and `epoch(s)` as usual; `SLOT_DURATION` is the network's beacon-chain seconds-per-slot (unchanged at Gloas, which alters only intra-slot timing). REJECT penalizes the delivering peer; IGNORE drops without forwarding or penalty.
+Notation: `S` is a proposal slot; `slot_start(s)` and `epoch(s)` as usual; for a non-genesis Gloas activation, `F` is the first slot of `GLOAS_FORK_EPOCH`; `SLOT_DURATION` is the network's beacon-chain seconds-per-slot (unchanged at Gloas, which alters only intra-slot timing). REJECT penalizes the delivering peer; IGNORE drops without forwarding or penalty.
 
 | Constant | Value |
 | -------- | ----- |
@@ -40,7 +40,11 @@ A qualifying randao partial MUST satisfy all of:
 - canonical SSZ; deterministic BLS share signature; deterministic RSA (PKCS#1 v1.5) operator signature; exactly one outer signer, equal to the embedded operator ID;
 - eligibility predicate: `S >= EARLY_RANDAO_LEAD` and `epoch(S) >= GLOAS_FORK_EPOCH` (the Ethereum Gloas fork epoch, as used by the ePBS SIP, [#94](https://github.com/ssvlabs/SIPs/pull/94)).
 
-The predicate is a pure function of `S`, evaluated identically by producers and receivers, never re-evaluated against wall-clock time. Activation is Ethereum-gated by `epoch(S) >= GLOAS_FORK_EPOCH`, matching the ePBS SIP's own validation gating; the `S >= EARLY_RANDAO_LEAD` conjunct keeps the producer's emission window well defined and excludes the first `EARLY_RANDAO_LEAD` slots at genesis. The SSV fork schedule plays no part, and an emission window that spans an SSV fork activation is fine: every fork-sensitive artifact of a partial signature (gossip topic, domain, role gating) is derived from the message's stamped slot rather than from the moment it was emitted, so such a message is published, validated, and consumed entirely under the fork active at `S`. The same holds for a window spanning the Ethereum fork boundary, which this predicate likewise permits. Containers violating the canonical form fall to existing structural rules (REJECT); BLS-share validity is not evaluated during message validation (see Message validation). Messages failing the predicate, and all non-randao messages, keep today's validation unchanged.
+The predicate is a pure function of `S`, evaluated identically by producers and receivers. It is not gated by the receiver's current epoch or by whether wall-clock time has reached the Gloas fork. The `S >= EARLY_RANDAO_LEAD` conjunct only keeps the producer's emission window well defined and excludes the first `EARLY_RANDAO_LEAD` slots at genesis.
+
+For a non-genesis activation, `F` and `F + 1` are eligible target slots. Their producer windows begin, by the producer's clock, at `slot_start(F - 2)` and `slot_start(F - 1)`, respectively. There is no activation warm-up: the first Gloas target slot receives the full early window. Because receiver timing includes `EARLY_RANDAO_CLOCK_TOLERANCE`, implementations MUST enable the receiver rules no later than `slot_start(F - 2) - EARLY_RANDAO_CLOCK_TOLERANCE` by the receiver's clock. This is the earliest receiver-local time at which a conforming partial for `F` can pass timing validation.
+
+The SSV fork schedule plays no part, and an emission window that spans an SSV fork activation is fine: every fork-sensitive artifact of a partial signature (gossip topic, domain, role gating) is derived from the message's stamped slot rather than from the moment it was emitted, so such a message is published, validated, and consumed entirely under the fork active at `S`. The same holds for a window spanning the Ethereum fork boundary. Containers violating the canonical form fall to existing structural rules (REJECT); BLS-share validity is not evaluated during message validation (see Message validation). Messages failing the predicate, and all non-randao messages, keep today's validation unchanged.
 
 **Producer behavior**
 
@@ -51,6 +55,8 @@ For a locally known proposer duty at eligible slot `S`, an operator:
 - SHOULD delay emission at least 500 ms past `slot_start(S - EARLY_RANDAO_LEAD)` (assumed maximum pairwise honest clock disparity: 1 s);
 - SHOULD still execute the existing in-slot emission at `S` unconditionally; a running origin's identical re-publish is absorbed by its own gossip layer (expected, not an error), and a restarted origin's re-publish aids recovery;
 - MAY emit immediately for a duty discovered inside the window; SHOULD emit multiple eligible duties in ascending slot order (correctness does not depend on it).
+
+For `S = F`, the interval begins at `slot_start(F - EARLY_RANDAO_LEAD)`, before wall-clock Gloas activation. Producer scheduling therefore needs to run before `F` to use the full window, but early emission itself remains optional.
 
 Operators that never emit early remain fully conformant.
 
@@ -120,7 +126,7 @@ Cross-client vectors MUST cover:
 - retention admission: a candidate in a never-fetched epoch retains and one in an epoch whose latest refresh failed retains, while one left Unknown by a succeeding fetch does not; a late failure result from a superseded attempt does not make the epoch retention-eligible; a provisional (execution-optimistic) response ends eligibility while installing no view;
 - an operator-authenticated share whose BLS signature is invalid is discarded at consumption and contributes to no reconstructed reveal; reconstruction still succeeds from a valid threshold of honest shares;
 - the eligibility predicate at genesis: slots below `EARLY_RANDAO_LEAD` are ineligible even when `GLOAS_FORK_EPOCH` is 0;
-- activation gating: `epoch(S)` immediately before `GLOAS_FORK_EPOCH` is ineligible; a non-genesis `GLOAS_FORK_EPOCH` is eligible from its first slot, whose emission window starts before the fork, and an SSV fork scheduled anywhere does not change that;
+- activation gating: `epoch(S)` immediately before `GLOAS_FORK_EPOCH` is ineligible; for a non-genesis `F`, an otherwise qualifying `msg.slot = F` received at receiver-local time `slot_start(F - 2) - EARLY_RANDAO_CLOCK_TOLERANCE` and `msg.slot = F + 1` received at `slot_start(F - 1) - EARLY_RANDAO_CLOCK_TOLERANCE` enter the Early RANDAO validation path even though local wall-clock time is before the fork; an SSV fork scheduled anywhere does not change that;
 - multi-fault precedence: a structurally valid message failing both operator-signature verification and a non-retaining contextual check (e.g. invalid signature plus Known-unassigned, or invalid signature plus too-early) may produce either the contextual verdict or REJECT, but is never retained, accepted, forwarded, collected, or state-mutating;
 - invalid operator signature with an Unknown duty view: REJECT, never retained;
 - restart cases, late mesh join, cross-epoch stamps.
