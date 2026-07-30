@@ -63,6 +63,8 @@ Operators that never emit early remain fully conformant.
 
 Validation of a potential Early RANDAO message begins with the structural and canonical-form checks, which MUST run first; a structurally and canonically valid randao container satisfying the eligibility predicate is an Early RANDAO candidate, and the rules below apply to candidates only (all other messages keep today's validation unchanged). For a candidate, implementations MAY order operator-signature verification and the non-mutating contextual checks below (timing, slot ordering, duty assignment, duplicate limits) according to local denial-of-service policy, and MAY short-circuit on a contextual verdict that neither retains nor accepts the message. Any outcome that retains, accepts, forwards, feeds signature collection, or mutates ordinary validation state MUST first pass operator-signature verification. If a candidate fails both operator-signature verification and a non-retaining contextual check, either the contextual verdict or the signature-verification REJECT is conformant, but the candidate is never retained. Ordinary validation state (duplicate counts, signer state, slot high-water marks, and epoch counters) mutates only on acceptance or successful promotion, never on IGNORE or initial retention.
 
+Candidate classification depends on message structure and the stamped target slot, not on whether a copy arrived before `slot_start(S)`. Consequently, the duty tri-state replaces existing RANDAO duty handling for every eligible target slot, including ordinary in-slot copies and later copies still within the existing Proposer lateness window.
+
 Checks are staged: operator-signature verification gates retention, acceptance, forwarding, and state mutation; BLS-share validity gates consumption. A candidate is fully qualifying only once every applicable check has passed; honest producers emit qualifying messages by construction.
 
 *Earliness.* A receiver MUST accept a candidate's timing iff
@@ -108,6 +110,8 @@ Unchanged. The reconstructed reveal is a per-epoch value: an implementation MAY 
 Cross-client vectors MUST cover:
 
 - earliness boundary at exactly `EARLY_RANDAO_LEAD * SLOT_DURATION + EARLY_RANDAO_CLOCK_TOLERANCE` (accept) and beyond (IGNORE);
+- candidate scope: an eligible in-slot `RandaoPartialSig` under an Unknown duty view produces the same initial IGNORE verdict as an otherwise-identical early copy;
+- message-kind scoping: a non-RANDAO Proposer-role message two slots early remains outside the candidate path and receives the existing timing IGNORE without the Early RANDAO ordering exemption;
 - Known-assigned pass, Known-unassigned IGNORE, and an otherwise-valid Unknown candidate producing the same initial IGNORE gossip verdict whether optional retention is enabled or not;
 - the stale-Known reorg path: an honest share is IGNOREd as Known-and-not-assigned under a stale complete schedule, and a later replacement schedule does not retroactively change the original gossip verdict;
 - same-epoch duty move: shares stamped `X` accepted under a duty-at-`X` view, the duty moves to `Y` in the same epoch, and the proposal at `Y` completes (served from the `X` reconstruction where the implementation reuses; via the in-slot exchange otherwise);
