@@ -8,7 +8,7 @@ Depends on the ePBS SIP (currently [PR #94](https://github.com/ssvlabs/SIPs/pull
 
 **Summary**
 
-Operators may emit their existing block-proposal RANDAO partial signature up to 2 slots before the proposal slot, so the cluster reconstructs `randao_reveal` before the slot starts instead of inside the post-Gloas ~3s block-production budget. No new duty, role, message kind, domain, topic, or container: the existing Proposer-duty `RandaoPartialSig` message is emitted earlier, stamped with the proposal slot as today. Protocol changes are confined to message-validation timing, ordering, and duty-handling rules; receivers may additionally retain Unknown-duty candidates locally for later revalidation. The rules activate by target proposal slot `S`: they apply when `epoch(S) >= GLOAS_FORK_EPOCH`, even if the permitted emission window for `S` begins before the fork in wall-clock time. The dependency on the ePBS SIP is activation coupling only.
+Operators may emit their existing block-proposal RANDAO partial signature up to 2 slots before the proposal slot, so the cluster reconstructs `randao_reveal` before the slot starts instead of inside the post-Gloas ~3s block-production budget. No new duty, role, message kind, domain, topic, or container: the existing Proposer-duty `RandaoPartialSig` message is emitted earlier, stamped with the proposal slot as today. Within the maximum window, an early-emitting producer's recommended first attempt is at `slot_start(S - 1)`, with the ordinary in-slot path still invoked at `S`. Protocol changes are confined to message-validation timing, ordering, and duty-handling rules; receivers may additionally retain Unknown-duty candidates locally for later revalidation. The rules activate by target proposal slot `S`: they apply when `epoch(S) >= GLOAS_FORK_EPOCH`, even if the permitted emission window for `S` begins before the fork in wall-clock time. The dependency on the ePBS SIP is activation coupling only.
 
 **Motivation**
 
@@ -17,7 +17,9 @@ Gloas moves the attestation deadline to 1/4 slot. RANDAO pre-consensus (sign, go
 **Rationale & Design Goals**
 
 - No new duty: RANDAO always has an in-slot consumer (the Proposer duty), and a separate duty would still need the in-slot pre-consensus as its fallback. This differs from `ProposerPreferences` (defined in the ePBS SIP, [#94](https://github.com/ssvlabs/SIPs/pull/94)), which must reconstruct before the slot and is mutable.
-- The 2-slot value is the maximum earliness receivers MUST support, not a gossip-latency requirement. Producers may emit later within that window, and operators need not emit simultaneously. At a participating receiver, the reveal becomes available once it has collected `2f+1` valid shares, so the latest share needed for quorum determines reconstruction time. Different producer schedules remain interoperable, but later schedules reduce the time saved before block proposal. The window also permits a simple slot-driven producer to make an initial attempt in the `S - 2` slot and retry in `S - 1` if the earlier local publication attempt fails. It does not guarantee a second network delivery after successful publication because byte-identical re-publications are gossip-deduplicated. A longer receiver window would widen reveal and stale-duty exposure without an identified need and would require protocol coordination.
+- The 2-slot value is the maximum earliness receivers MUST support, not a gossip-latency requirement. Different producer schedules remain interoperable, but both reconstruction and third-party knowability begin only after `2f+1` shares, so the common producer policies determine typical readiness and exposure. A longer receiver window would widen reveal and stale-duty exposure without an identified need and would require protocol coordination.
+- The recommended `S - 1` policy gives a full slot for gossip and reconstruction while reducing reveal exposure relative to emission near the receiver boundary. The SIP does not coordinate a second pre-slot attempt. Earlier and later policies remain conformant and are compared by the mandatory testnet measurement before mainnet activation guidance.
+- A locally reported publication success does not prove peer delivery, and byte-identical re-publications may be gossip-deduplicated. The in-slot path is therefore a best-effort fallback, while reuse of cached reconstructions or signing artifacts is an implementation optimization.
 - The per-(signer, slot) duplicate limit stays 1. Each logical partial has exactly one valid byte encoding, gossip message identifiers are content-derived, and gossip layers deduplicate before validation, so a second copy either never reaches validation or is the receiver's first copy.
 - Because gossip duplicate-cache lifetimes can exceed the entire useful Early RANDAO window, a receiver that IGNOREs an early partial cannot rely on a byte-identical in-slot re-emission to recover that share. The dedicated clock tolerance narrows timing-induced loss, and optional Unknown-duty retention can recover some missing-view cases. Remaining losses are bounded by the existing round-change path.
 
@@ -28,6 +30,7 @@ Notation: `S` is a proposal slot; `slot_start(s)` and `epoch(s)` as usual; for a
 | Constant | Value |
 | -------- | ----- |
 | `EARLY_RANDAO_LEAD` | 2 slots |
+| `EARLY_RANDAO_RECOMMENDED_LEAD` | `SLOT_DURATION` (12 s for a 12 s slot) |
 | `EARLY_RANDAO_CLOCK_TOLERANCE` | 1000 ms |
 
 **Qualifying message**
@@ -51,11 +54,12 @@ For a locally known proposer duty at eligible slot `S`, an operator:
 
 - MAY broadcast its qualifying randao partial at any wall-clock time in `[slot_start(S - EARLY_RANDAO_LEAD), slot_start(S))`;
 - MUST NOT broadcast it before `slot_start(S - EARLY_RANDAO_LEAD)` by its own clock;
-- SHOULD delay emission at least 500 ms past `slot_start(S - EARLY_RANDAO_LEAD)` (assumed maximum pairwise honest clock disparity: 1 s);
-- SHOULD still execute the existing in-slot emission at `S` unconditionally; a running origin's identical re-publish is absorbed by its own gossip layer (expected, not an error), and a restarted origin's re-publish aids recovery;
-- MAY emit immediately for a duty discovered inside the window; SHOULD emit multiple eligible duties in ascending slot order (correctness does not depend on it).
+- if it elects to emit early and knows the duty by the recommended time, SHOULD make its first local publication attempt at `slot_start(S) - EARLY_RANDAO_RECOMMENDED_LEAD`, equivalent to `slot_start(S - 1)`;
+- SHOULD still invoke the existing in-slot emission path at `S` regardless of its locally recorded early outcome; this is a best-effort fallback, not proof of redelivery, and a running origin's identical re-publish is absorbed by its own gossip layer (expected, not an error), while a restarted origin's re-publish aids recovery;
+- MAY serve an already reconstructed reveal to the in-slot consumer without waiting for repeated local-share signing, envelope signing, or publication; implementations MAY reuse cached valid signing artifacts or schedule the emission attempt independently;
+- MAY emit immediately for a duty first discovered after the recommended first-attempt time; SHOULD emit multiple eligible duties in ascending slot order (correctness does not depend on it).
 
-For `S = F`, the interval begins at `slot_start(F - EARLY_RANDAO_LEAD)`, before wall-clock Gloas activation. Producer scheduling therefore needs to run before `F` to use the full window, but early emission itself remains optional.
+For `S = F`, the interval begins at `slot_start(F - EARLY_RANDAO_LEAD)`, and the recommended producer time is `slot_start(F - 1)`, both before wall-clock Gloas activation. Producer scheduling therefore needs to run before `F` to follow the recommendation, but early emission itself remains optional.
 
 Operators that never emit early remain fully conformant.
 
@@ -74,6 +78,8 @@ slot_start(msg.slot) - local_now <= EARLY_RANDAO_LEAD * SLOT_DURATION + EARLY_RA
 ```
 
 inclusive on the accept side; strictly greater is IGNORE. This replaces the generic clock tolerance for this rule only. Lateness is unchanged (existing Proposer-role TTL against `msg.slot`). All other message classes keep their existing allowances.
+
+`EARLY_RANDAO_CLOCK_TOLERANCE` is receiver-side headroom covering the assumed maximum 1 s pairwise honest clock disparity at the producer's legal boundary. It does not shift the recommended producer time.
 
 *Slot ordering.* Candidate randao partials are exempt from the per-(operator, `MessageID`) highest-seen-slot rule in both directions: they MUST NOT be rejected for a slot below the high-water mark, and they MUST NOT advance the high-water mark applied to other message classes on the same `MessageID` (randao shares its `MessageID` with the proposal's consensus and post-consensus traffic). Final acceptance still requires the remaining qualifying-message checks; earliness, lateness, the duplicate limit of 1, and canonical form bound these messages instead.
 
@@ -101,7 +107,7 @@ Shares that are neither promoted nor normally accepted MUST NOT be fed to signat
 
 **Reconstruction and consumption**
 
-Unchanged. The reconstructed reveal is a per-epoch value: an implementation MAY serve a proposal at slot `Y` from a reconstruction built via shares stamped for slot `X` of the same epoch, provided every contributing share was promoted or normally accepted. Wire messages remain per-slot-stamped.
+Reconstruction semantics are unchanged. A completed reconstruction MAY be served immediately to the in-slot consumer; invoking the best-effort in-slot emission path does not require the consumer to wait for repeated signing or publication. The reconstructed reveal is a per-epoch value: an implementation MAY serve a proposal at slot `Y` from a reconstruction built via shares stamped for slot `X` of the same epoch, provided every contributing share was promoted or normally accepted. Wire messages remain per-slot-stamped.
 
 "Promoted or normally accepted" is evaluated at receipt or promotion time against the receiver's then-current duty view and is never re-evaluated at consumption. The cross-slot case is reachable two ways: a validator with two proposals in the same epoch, and a reorg that moves a proposal from `X` to `Y` after `X`-stamped shares were accepted under the pre-reorg view; the allowance exists so a completed early collection survives the shift. The signed object is identical for `X` and `Y` (`SSZUint64(epoch)`), so reuse has no cryptographic effect; implementations that key collection by signing root exercise it naturally, and implementations that require exact-slot consumption remain conformant.
 
@@ -125,13 +131,15 @@ Cross-client vectors MUST cover:
 
 Implementations that provide optional retention SHOULD additionally test that initial retention leaves the gossip verdict and ordinary validation state unchanged, candidates with invalid operator signatures are never retained, unpromoted candidates never reach signature collection, promotion performs full revalidation, and candidates that fail revalidation are discarded.
 
-Before mainnet activation guidance, testnet measurement MUST quantify early-share miss incidence at duty start (stratified by emission lead, receiver restarts, partition duration, leader round, and whether receiver retention was enabled), record promotion timing and outcome where retention is enabled, and MUST demonstrate round-2 viability under Gloas timing, meaning block publication before the post-Gloas useful-block deadline.
+Producer implementations that emit early SHOULD test the recommended `S - 1` attempt, an injected local publication failure followed by the in-slot path, duty discovery after the recommended time, unconditional invocation of the in-slot path with and without a completed reconstruction, and completion of a cached in-slot consumer without waiting for repeated signing or publication.
+
+Before mainnet activation guidance, testnet measurement MUST quantify early-share miss incidence at duty start (stratified by emission lead, receiver restarts, partition duration, leader round, and whether receiver retention was enabled), record promotion timing and outcome where retention is enabled, and MUST demonstrate round-2 viability under Gloas timing, meaning block publication before the post-Gloas useful-block deadline. The emission-lead comparison MUST include `EARLY_RANDAO_RECOMMENDED_LEAD`, at least one earlier lead, and at least one later lead, and MUST record threshold-ready time relative to `slot_start(S)` so the resulting reveal-exposure window is explicit.
 
 **Security Considerations**
 
 - Deliberately ineligible early emission only starves the attacker's own share (only the signer can produce the bytes). The clock tolerance and IGNORE-not-REJECT choices narrow the permanent-loss class for honest shares, and optional retention can further narrow Unknown-view losses. Stale Known views and Unknown candidates that are not retained or are discarded before promotion remain residual loss cases.
 - Gossip duplicate-cache lifetimes can exceed the entire useful Early RANDAO window, so a receiver that has already seen and IGNOREd an early share cannot rely on byte-identical re-emission for recovery. A receiver restart can both clear its seen state and drop any in-memory retained candidates; restarts and partitions are correlated events. Residual: a live round-1 leader without a reconstruction forces a round change. Mitigations: later emission inside the window, unconditional in-slot emission where duplicate state does not suppress it, optional retention, and the mandatory testnet measurement above.
-- Early reconstruction widens the third-party reaction window between reveal knowability and block publication from roughly 2-4 s to up to 25 s, enabling adaptive bribery, censorship, or targeted DoS when withholding the proposal favors an adversary (one randao bit per affected slot, compounding across slots). Bounded by the existing single-proposal grinding bound; narrowable operationally via later emission, without a protocol change.
+- Under `EARLY_RANDAO_RECOMMENDED_LEAD`, a homogeneous cluster may make the reveal knowable close to one slot before `S`, compared with roughly 2-4 s today. The wider reaction window enables adaptive bribery, censorship, or targeted DoS when withholding the proposal favors an adversary (one randao bit per affected slot, compounding across slots). It is bounded by the existing single-proposal grinding bound and can be adjusted via producer policy without changing the receiver window.
 - Optional retention exposes local memory and revalidation work to operator-authenticated candidates. Implementations that enable it are responsible for bounding local resource use and MAY scope retention to committees they participate in. Capacity, eviction, and persistence choices do not affect wire conformance.
 - No unauthenticated retention amplification: messages failing operator-signature verification are never forwarded or retained. An operator-authenticated share whose BLS signature proves invalid at consumption is attributable and MUST be discarded without contributing to a reconstructed reveal. A signer emitting two distinct containers for one (signer, slot) is provably misbehaving and attributable via its operator signature.
 - No slashing surface: the randao object is not slashable and is a pure function of public data; early signing changes when it is signed, not what.
