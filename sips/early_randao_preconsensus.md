@@ -27,11 +27,11 @@ Gloas moves the attestation deadline to 1/4 slot. RANDAO pre-consensus (sign, go
 
 Notation: `S` is a proposal slot; `slot_start(s)` and `epoch(s)` as usual; for a non-genesis Gloas activation, `F` is the first slot of `GLOAS_FORK_EPOCH`; `SLOT_DURATION` is the network's beacon-chain seconds-per-slot (unchanged at Gloas, which alters only intra-slot timing). REJECT penalizes the delivering peer; IGNORE drops without forwarding or penalty.
 
-| Constant | Value |
-| -------- | ----- |
-| `EARLY_RANDAO_LEAD` | 2 slots |
-| `EARLY_RANDAO_RECOMMENDED_LEAD` | `SLOT_DURATION` (12 s for a 12 s slot) |
-| `EARLY_RANDAO_CLOCK_TOLERANCE` | 1000 ms |
+| Constant | Value | Description |
+| -------- | ----- | ----------- |
+| `EARLY_RANDAO_LEAD` | 2 slots | Maximum permitted emission lead and base receiver earliness allowance |
+| `EARLY_RANDAO_RECOMMENDED_LEAD` | `SLOT_DURATION` (12 s for a 12 s slot) | Recommended lead for an early producer's first publication attempt |
+| `EARLY_RANDAO_CLOCK_TOLERANCE` | 1000 ms | Additional receiver allowance for honest clock disparity at the earliest emission boundary |
 
 **Qualifying message**
 
