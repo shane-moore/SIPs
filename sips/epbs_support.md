@@ -188,7 +188,7 @@ Under Gloas, `produceBlockV4` (`GET /eth/v4/validator/blocks/{slot}`, merged via
 
 `ProposerConsensusData` is preserved: its struct shape (`Duty`, `Version`, `DataSSZ []byte`) is unchanged. `DataSSZ` carries the SSZ-encoded `Gloas.BeaconBlock`. The stateless `BlockContents` variant is handled identically: the cluster extracts the block into `DataSSZ` for QBFT; the inline envelope, blobs, and KZG proofs are handled by [§6](#6-new-duty-envelope-signing-self-build-path).
 
-Although the struct shape is unchanged, [`ProposerConsensusData.GetBlockData()`](https://github.com/ssvlabs/ssv-spec/blob/85ee4f32e4fc22bae8aacf837153aab3dcd6620b/types/consensus_data.go#L175-L237)'s per-version switch (Capella → Fulu today) needs a new `DataVersionGloas` arm that unmarshals `DataSSZ` as `Gloas.BeaconBlock`.
+Although the struct shape is unchanged, [`ProposerConsensusData.GetBlockData()`](https://github.com/ssvlabs/ssv-spec/blob/ac6b423370632ab89d8c06d162174f8c08badc32/types/consensus_data.go#L175-L237)'s per-version switch (Capella → Fulu today) needs a new `DataVersionGloas` arm that unmarshals `DataSSZ` as `Gloas.BeaconBlock`.
 
 The decided value's `Version` selects how `DataSSZ` is decoded (`Gloas.BeaconBlock` when `Version >= DataVersionGloas`), and `Version` is leader-supplied. An operator MUST reject any decided value whose `Version` does not equal the fork scheduled at `duty.Slot`. Honest proposers always stamp `Version == fork(duty.Slot)`, so this rejects no honest value.
 
@@ -269,7 +269,7 @@ To bound QBFT message size, the cluster runs QBFT over a blinded form that subst
 // SSZ type: ProgressiveContainer(active_fields=[1, 1, 1, 1, 1])
 type BlindedExecutionPayloadEnvelope struct {
     PayloadRoot           phase0.Root // == hash_tree_root(envelope.payload)
-    ExecutionRequests     gloas.ExecutionRequests // Gloas 5-list container: adds builder_deposits and builder_exits (EIP-8282)
+    ExecutionRequests     gloas.ExecutionRequests // Gloas 5-list container (EIP-8282)
     BuilderIndex          uint64
     BeaconBlockRoot       phase0.Root
     ParentBeaconBlockRoot phase0.Root
@@ -291,7 +291,7 @@ mix_in_active_fields(
 )
 ```
 
-`payload_root` MUST be the progressive Gloas `ExecutionPayload` root, and `execution_requests` MUST use the progressive Gloas `ExecutionRequests` root. The request lists are `ProgressiveList`s whose merkleization mixes in no list maximum; implementations MUST NOT let pre-Gloas positional `ssz-max` bounds reject or re-shape them when decoding or hashing the decided value (Gloas gossip still enforces per-list count limits for all but the deposit-request list, whose bound is removed). Blinded-to-full root equivalence MUST be tested against a fixed expected root, not only by comparing the two locally derived values: a same-implementation comparison passes even when both sides share the same incorrect merkleization.
+`payload_root` MUST be the progressive Gloas `ExecutionPayload` root, and `execution_requests` MUST use the progressive Gloas `ExecutionRequests` root. Only `payload` is blinded: the other four fields stay verbatim from the consensus-spec `ExecutionPayloadEnvelope`, so the SSV form deviates from the upstream container in exactly one field, and the request lists (including [EIP-8282](https://eips.ethereum.org/EIPS/eip-8282)'s builder deposits and exits) are tiny relative to the payload, so blinding them would save nothing. The request lists are `ProgressiveList`s whose merkleization mixes in no list maximum; implementations MUST NOT let pre-Gloas positional `ssz-max` bounds reject or re-shape them when decoding or hashing the decided value (Gloas gossip still enforces per-list count limits for all but the deposit-request list, whose bound is removed). Blinded-to-full root equivalence MUST be tested against a fixed expected root, not only by comparing the two locally derived values: a same-implementation comparison passes even when both sides share the same incorrect merkleization.
 
 #### Trigger and envelope source
 
