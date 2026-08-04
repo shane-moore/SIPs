@@ -4,7 +4,7 @@
 
 ## Summary
 
-Describes the SSV spec changes needed to keep SSV operators performing validator duties correctly after ePBS, [EIP-7732](https://eips.ethereum.org/EIPS/eip-7732), is implemented in Ethereum's consensus layer Gloas fork. Based on the pinned [Gloas consensus-spec snapshot](https://github.com/ethereum/consensus-specs/tree/46d3d35132209b5a0af531eabba8a73db328d14b/specs/gloas) (`ethereum/consensus-specs@46d3d3513`, reviewed 2026-08-04).
+Describes the SSV spec changes needed to keep SSV operators performing validator duties correctly after ePBS, [EIP-7732](https://eips.ethereum.org/EIPS/eip-7732), is implemented in Ethereum's consensus layer Gloas fork. Based on the pinned [Gloas consensus-spec snapshot](https://github.com/ethereum/consensus-specs/tree/46d3d35132209b5a0af531eabba8a73db328d14b/specs/gloas) (`ethereum/consensus-specs@46d3d3513`, reviewed 2026-08-04), which includes the progressive Gloas types from [EIP-7688](https://eips.ethereum.org/EIPS/eip-7688) via [consensus-specs #4630](https://github.com/ethereum/consensus-specs/pull/4630).
 
 Validator client related changes via ePBS:
 1. earlier slot deadlines
@@ -13,6 +13,7 @@ Validator client related changes via ePBS:
 4. the Gloas proposer flow using `produceBlockV4`. The SSV cluster signs the `Gloas.BeaconBlock` in [§4](#4-modified-proposer-duty) and, on the self-build path, signs `SignedExecutionPayloadEnvelope` as a companion QBFT duty ([§6](#6-new-duty-envelope-signing-self-build-path)).
 5. the new `SignedProposerPreferences` message must be submitted if the node operator wants to be able to select block bids received over p2p
 6. the existing validator-registration duty is deprecated at the Gloas fork, its purpose replaced by `SignedProposerPreferences` ([§5](#5-proposer-preferences-duty))
+7. EIP-7688 changes Gloas aggregate, block, and envelope signing roots without changing their SSZ serialization
 
 ## Motivation
 
@@ -21,6 +22,7 @@ Gloas changes validator duties in ways that break a few current SSV assumptions:
 - attestation `index` is no longer safely reconstructible from local validator duty data
 - the new PTC duty has a late in-slot deadline
 - SSV validators must broadcast `SignedProposerPreferences` or they cannot accept builder bids for their slots
+- matching SSZ bytes can conceal a progressive-versus-positional signing-root split between operators
 
 ## Rationale
 
@@ -30,7 +32,8 @@ Key design choices and why:
 - **PTC is a validator-scoped, non-QBFT runner.** Each operator signs the `PayloadAttestationData` its own beacon node observed at the 75% broadcast mark, validates incoming partial signatures against its own derived signing root, and reconstructs when that root reaches threshold, the same one-round shape as `ProposerPreferences` ([§5](#5-proposer-preferences-duty)). A PTC vote is one beacon node's observation, not a value to negotiate, so QBFT would only add round-trips that risk the late-slot deadline ([§3](#3-new-duty-payload-timeliness-committee-ptc-attestation)).
 - **Proposer-preferences is validator-scoped and non-QBFT.** The per-validator `fee_recipient` is configured cluster-side and is cluster-consistent in practice; `target_gas_limit` is operator-configured, with a client default when unset; operators in a cluster must agree byte-for-byte on the value used at signing time, the same convergence requirement as the existing validator-registration flow. Operators independently derive the full `ProposerPreferences` and validate incoming partial signatures against their own derived signing root; reconstruction succeeds only when a quorum of operators converge on one signing root. The registration-like one-round partial-sig-and-submit flow from `voluntary_exit.md` fits directly.
 - **Block QBFT remains scoped to the `Gloas.BeaconBlock`.** `ProposerConsensusData.data_ssz` carries the block SSZ, matching today's shape. Distributed signing of `SignedExecutionPayloadEnvelope` for the self-build path is covered by a separate companion QBFT duty ([§6](#6-new-duty-envelope-signing-self-build-path)), keyed by the block QBFT's decided block root.
-- **Envelope QBFT uses a blinded envelope shape.** [§6](#6-new-duty-envelope-signing-self-build-path)'s duty runs QBFT over `BlindedExecutionPayloadEnvelope` (`payload` → `payload_root: Root`), whose hash tree root equals the full envelope's. Keeps QBFT messages bounded (~few hundred bytes vs hundreds of KB to ~MB).
+- **Envelope QBFT uses a blinded envelope shape.** [§6](#6-new-duty-envelope-signing-self-build-path)'s duty runs QBFT over `BlindedExecutionPayloadEnvelope` (`payload` → `payload_root: Root`), whose progressive hash tree root equals the full envelope's. Keeps QBFT messages bounded (~few hundred bytes vs hundreds of KB to ~MB).
+- **EIP-7688 changes Ethereum object roots without changing their SSZ bytes.** Gloas `Attestation`, `BeaconBlockBody`, `ExecutionPayload`, `ExecutionRequests`, `ExecutionPayloadEnvelope`, and their progressive list fields use progressive merkleization; SSV's outer QBFT and pubsub containers, including the decided `DataSSZ` bytes, do not change. The affected SSV signing roots are exactly the [§2](#2-modified-attestation-duty) aggregate, the [§4](#4-modified-proposer-duty) block, and the [§6](#6-new-duty-envelope-signing-self-build-path) envelope. Every other object SSV signs (`AttestationData`, selection proofs, the RANDAO epoch, sync-committee message roots and `ContributionAndProof`, `VoluntaryExit`, `PayloadAttestationData`, `ProposerPreferences`) keeps its existing merkleization, and duties that consume a beacon-node-supplied `beacon_block_root` need no new SSV rule.
 
 ## Specification
 
@@ -56,6 +59,7 @@ Relevant consensus-spec references:
 Relevant consensus-spec references:
 
 - [Validator attestation changes](https://github.com/ethereum/consensus-specs/blob/46d3d35132209b5a0af531eabba8a73db328d14b/specs/gloas/validator.md#attestation)
+- [Gloas `Attestation` progressive container](https://github.com/ethereum/consensus-specs/blob/46d3d35132209b5a0af531eabba8a73db328d14b/specs/gloas/beacon-chain.md#attestation)
 
 #### Consensus-spec change
 
@@ -110,7 +114,9 @@ Pre-Gloas slots continue to run `BeaconVoteValueCheckF()` unchanged.
 
 The `BNRoleAggregator` duty (handled by the aggregator-committee runner) fetches aggregated attestations from the Beacon API's aggregate-attestation endpoint with `attestation_data_root` as an input. Implementations must compute that root over the full Gloas `AttestationData` reconstructed from the decided `GloasBeaconVote` (including `AttestationDataIndex`), rather than from a locally reconstructed pre-Gloas shape; a root computed without the decided `index` matches no aggregate.
 
-`AggregatorCommitteeConsensusData.Version` is part of the QBFT-decided value, so operators must stamp it identically: use `DataVersionGloas` at Gloas slots (as [§4](#4-modified-proposer-duty) does for `ProposerConsensusData`). The aggregate stays Electra-shaped; Gloas changes only `AttestationData.Index` semantics, not the aggregate container.
+`AggregatorCommitteeConsensusData.Version` is part of the QBFT-decided value, so operators must stamp it identically: use `DataVersionGloas` at Gloas slots (as [§4](#4-modified-proposer-duty) does for `ProposerConsensusData`).
+
+The aggregate's SSZ serialization is unchanged by EIP-7688, but its merkleization is not. At Gloas slots, `Attestation` is a four-field `ProgressiveContainer` and `aggregation_bits` is a `ProgressiveBitList`. `AggregateAndProof` remains an ordinary container, but its root commits to the nested progressive `Attestation` root. Both the aggregator-committee path and any retained single-validator aggregation path MUST therefore decode the aggregate as the Gloas type and compute the `AggregateAndProof` signing root under `DOMAIN_AGGREGATE_AND_PROOF` using Gloas merkleization. Treating Gloas bytes as an Electra aggregate produces an obsolete positional root.
 
 ### 3. New Duty: Payload Timeliness Committee (PTC) Attestation
 
@@ -174,6 +180,7 @@ const (
 Relevant consensus-spec references:
 
 - [Validator block and sidecar proposal flow](https://github.com/ethereum/consensus-specs/blob/46d3d35132209b5a0af531eabba8a73db328d14b/specs/gloas/validator.md#block-and-sidecar-proposal)
+- [Gloas `BeaconBlockBody` progressive container](https://github.com/ethereum/consensus-specs/blob/46d3d35132209b5a0af531eabba8a73db328d14b/specs/gloas/beacon-chain.md#beaconblockbody)
 
 Under Gloas, `produceBlockV4` (`GET /eth/v4/validator/blocks/{slot}`, merged via [beacon-APIs #580](https://github.com/ethereum/beacon-APIs/pull/580) and updated by [#624](https://github.com/ethereum/beacon-APIs/pull/624)) replaces the pre-Gloas proposer flow; blinded blocks are removed. The beacon node returns `Gloas.BeaconBlock` when the required `include_payload` query parameter is `false` (and on any external-build response), or `Gloas.BlockContents` when it is `true` on a self-build response. The variant is signaled by the required `execution_payload_included` response field and `Eth-Execution-Payload-Included` header.
 
@@ -185,7 +192,9 @@ Although the struct shape is unchanged, [`ProposerConsensusData.GetBlockData()`]
 
 The decided value's `Version` selects how `DataSSZ` is decoded (`Gloas.BeaconBlock` when `Version >= DataVersionGloas`), and `Version` is leader-supplied. An operator MUST reject any decided value whose `Version` does not equal the fork scheduled at `duty.Slot`. Honest proposers always stamp `Version == fork(duty.Slot)`, so this rejects no honest value.
 
-Pre-consensus RANDAO flow is unchanged. Post-consensus is unchanged: each operator's `PostConsensusPartialSig` packet carries one `PartialSignatureMessage` over the block root under `DOMAIN_BEACON_PROPOSER`. Publish the signed block as `Gloas.SignedBeaconBlock` via the existing block-publish endpoint.
+Pre-consensus RANDAO flow is unchanged. The post-consensus message flow is also unchanged: each operator's `PostConsensusPartialSig` packet carries one `PartialSignatureMessage` over the block root under `DOMAIN_BEACON_PROPOSER`, and the signed block is published as `Gloas.SignedBeaconBlock` via the existing block-publish endpoint.
+
+EIP-7688 does change how that block root is derived. The decided `DataSSZ` bytes are unchanged, but the Gloas block root commits to a progressive `BeaconBlockBody` and its progressive nested types and lists. Operators MUST decode and hash the decided value as `Gloas.BeaconBlock`; positional container merkleization is invalid at Gloas slots.
 
 **Envelope signing.** Under Gloas, the validator signs `SignedExecutionPayloadEnvelope` only in the self-build path (`bid.builder_index == BUILDER_INDEX_SELF_BUILD`, per [EIP-7732](https://eips.ethereum.org/EIPS/eip-7732)); in the external-build path the builder signs and publishes its own envelope. Distributed signing of `SignedExecutionPayloadEnvelope` for the self-build path is specified in [§6](#6-new-duty-envelope-signing-self-build-path).
 
@@ -246,6 +255,7 @@ Gloas removes every protocol consumer of `SignedValidatorRegistrationV1`: builde
 Relevant consensus-spec references:
 
 - [`ExecutionPayloadEnvelope` container](https://github.com/ethereum/consensus-specs/blob/46d3d35132209b5a0af531eabba8a73db328d14b/specs/gloas/beacon-chain.md#executionpayloadenvelope)
+- [EIP-7495 `ProgressiveContainer` merkleization](https://eips.ethereum.org/EIPS/eip-7495#merkleization)
 - [`execution_payload` gossip topic (carries `SignedExecutionPayloadEnvelope`)](https://github.com/ethereum/consensus-specs/blob/46d3d35132209b5a0af531eabba8a73db328d14b/specs/gloas/p2p-interface.md#new-execution_payload)
 - [`POST /eth/v1/beacon/execution_payload_envelopes` endpoint](https://github.com/ethereum/beacon-APIs/pull/624)
 
@@ -253,9 +263,10 @@ On the self-build path (`bid.builder_index == BUILDER_INDEX_SELF_BUILD` per [EIP
 
 #### Blinded envelope type
 
-To bound QBFT message size, the cluster runs QBFT over a blinded form that substitutes `payload` with `payload_root: Root = hash_tree_root(payload)`. In SSZ merkleization every field subtree commits to `hash_tree_root(field)`, so substituting `payload` with its root in the same field position preserves the container root: `hash_tree_root(BlindedExecutionPayloadEnvelope) == hash_tree_root(ExecutionPayloadEnvelope)`, and a BLS sig over the blinded signing root is valid for the full envelope. (If EIP-7688 progressive containers land in Gloas, this note and the blinded struct below must merkleize with the progressive shape; see the watchlist.)
+To bound QBFT message size, the cluster runs QBFT over a blinded form that substitutes `payload` with `payload_root: Root = hash_tree_root(payload)`. The blinded type MUST use the same five-field `ProgressiveContainer` shape as `ExecutionPayloadEnvelope` (serialization is unaffected; only merkleization differs). Substituting the first field with its root then preserves the progressive container root: `hash_tree_root(BlindedExecutionPayloadEnvelope) == hash_tree_root(ExecutionPayloadEnvelope)`, and a BLS signature over the blinded signing root is valid for the full envelope.
 
 ```go
+// SSZ type: ProgressiveContainer(active_fields=[1, 1, 1, 1, 1])
 type BlindedExecutionPayloadEnvelope struct {
     PayloadRoot           phase0.Root // == hash_tree_root(envelope.payload)
     ExecutionRequests     gloas.ExecutionRequests // Gloas 5-list container: adds builder_deposits and builder_exits (EIP-8282)
@@ -264,6 +275,23 @@ type BlindedExecutionPayloadEnvelope struct {
     ParentBeaconBlockRoot phase0.Root
 }
 ```
+
+Its root is:
+
+```text
+mix_in_active_fields(
+    merkleize_progressive([
+        payload_root,
+        hash_tree_root(execution_requests),
+        hash_tree_root(builder_index),
+        hash_tree_root(beacon_block_root),
+        hash_tree_root(parent_beacon_block_root),
+    ]),
+    [1, 1, 1, 1, 1],
+)
+```
+
+`payload_root` MUST be the progressive Gloas `ExecutionPayload` root, and `execution_requests` MUST use the progressive Gloas `ExecutionRequests` root. The request lists are `ProgressiveList`s whose merkleization mixes in no list maximum; implementations MUST NOT let pre-Gloas positional `ssz-max` bounds reject or re-shape them when decoding or hashing the decided value (Gloas gossip still enforces per-list count limits for all but the deposit-request list, whose bound is removed). Blinded-to-full root equivalence MUST be tested against a fixed expected root, not only by comparing the two locally derived values: a same-implementation comparison passes even when both sides share the same incorrect merkleization.
 
 #### Trigger and envelope source
 
@@ -313,7 +341,7 @@ No envelope-content validation: `PayloadRoot` (and therefore every constituent f
 
 #### Post-consensus
 
-Operators sign the decided `BlindedExecutionPayloadEnvelope`'s signing root under `DOMAIN_BEACON_BUILDER` (`0x0B000000`), domain epoch = `compute_epoch_at_slot(duty.slot)` (matching `verify_execution_payload_envelope_signature`'s `get_domain(state, DOMAIN_BEACON_BUILDER)` against the proposal-slot state); by SSZ root-equivalence this is the full envelope's signing root. Partial sigs broadcast as `PostConsensusPartialSig`.
+Operators sign the decided `BlindedExecutionPayloadEnvelope`'s progressive signing root under `DOMAIN_BEACON_BUILDER` (`0x0B000000`), domain epoch = `compute_epoch_at_slot(duty.slot)` (matching `verify_execution_payload_envelope_signature`'s `get_domain(state, DOMAIN_BEACON_BUILDER)` against the proposal-slot state); by root-equivalence this is the full envelope's signing root. Partial sigs broadcast as `PostConsensusPartialSig`.
 
 #### Publication
 
@@ -357,6 +385,10 @@ Epoch-aware fork gates, a new rule class. Both are REJECT because they are slot-
 
 ## Security Considerations
 
+### Mixed merkleization splits threshold signatures
+
+Operators using positional and progressive implementations can decode and reach QBFT agreement on identical `DataSSZ` bytes while deriving different signing roots. Their partial signatures do not reconstruct together. If a threshold uses the obsolete positional root, it can reconstruct a signature that the beacon network rejects. Fork-aware Gloas types and cross-implementation root fixtures are therefore consensus-critical interoperability requirements, not encoding-only upgrades.
+
 ### `GloasBeaconVoteValueCheckF` must include `AttestationDataIndex` in slashability checks
 
 Under Gloas, `AttestationData.Index` is part of the attestation data root and therefore part of the double-vote slashing predicate. `GloasBeaconVoteValueCheckF` must reconstruct the full Gloas `AttestationData` with `Index` from the decided `GloasBeaconVote.AttestationDataIndex` before calling `IsAttestationSlashable`; otherwise an operator could sign `index=0` and `index=1` for the same `(source, target)` in the same slot without the predicate tripping.
@@ -390,7 +422,7 @@ The slot's envelope is missed if the operator whose local full envelope blinds t
 This section is intentionally limited to upstream items that could still change the normative SSV behavior described above. If any of these settle differently, this SIP should be updated.
 
 - `produceBlockV4` request shape and builder authentication: [beacon-APIs #625](https://github.com/ethereum/beacon-APIs/pull/625) proposes replacing the GET with a POST carrying per-builder `BuilderPreferences`, including an optional `SignedRequestAuthV1`. If adopted, update [§4](#4-modified-proposer-duty)'s endpoint and specify the distributed request-auth signing duty once [builder-specs #165](https://github.com/ethereum/builder-specs/pull/165) settles the signed object and forwarding contract.
-- EIP-7688 progressive containers: [EIP-7688](https://eips.ethereum.org/EIPS/eip-7688) (forward-compatible consensus data structures) reshapes core Gloas containers into `ProgressiveContainer`s, changing how `hash_tree_root` is computed for the [§4](#4-modified-proposer-duty) block signing root and the [§6](#6-new-duty-envelope-signing-self-build-path) envelope. It is only Considered for Inclusion (CFI), not Scheduled for Inclusion, for Glamsterdam ([EIP-7773](https://eips.ethereum.org/EIPS/eip-7773); targeted for glamsterdam-devnet-7, inclusion decision pending). The pinned snapshot `46d3d3513` has already merged it ([consensus-specs #4630](https://github.com/ethereum/consensus-specs/pull/4630)), but this SIP describes positional merkleization until 7688 is SFI'd: at that point [§6](#6-new-duty-envelope-signing-self-build-path)'s blinded-envelope note adopts `mix_in_active_fields(merkleize_progressive(...))` and [§4](#4-modified-proposer-duty) gains a matching block-root note.
+- EIP-7688 integration: this SIP adopts the progressive roots following [ACDC 183](https://github.com/ethereum/pm/issues/2158#issuecomment-5059393845)'s ratification of the devnet-7 EIPs as Scheduled for Inclusion, while [EIP-7773](https://eips.ethereum.org/EIPS/eip-7773) still awaits its status update (Considered for Inclusion as of 2026-08-04). Track that documentation change and the client type implementations in [Lighthouse #9450](https://github.com/sigp/lighthouse/pull/9450) (merged to `unstable` 2026-08-04) and [go-eth2-client #302](https://github.com/attestantio/go-eth2-client/pull/302). API or type changes may require updates to [§2](#2-modified-attestation-duty), [§4](#4-modified-proposer-duty), and [§6](#6-new-duty-envelope-signing-self-build-path), but the documentation lag does not reinstate positional roots.
 
 ## Acknowledgements
 
