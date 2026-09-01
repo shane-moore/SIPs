@@ -296,11 +296,11 @@ Relevant consensus-spec references:
 - [`execution_payload` gossip topic (carries `SignedExecutionPayloadEnvelope`)](https://github.com/ethereum/consensus-specs/blob/a5a1bc630401eedbe2f3d87934c99012578c113b/specs/gloas/p2p-interface.md#new-execution_payload)
 - [`POST /eth/v1/beacon/execution_payload_envelopes` endpoint](https://github.com/ethereum/beacon-APIs/pull/624)
 
-On the self-build path (`bid.builder_index == BUILDER_INDEX_SELF_BUILD` per [EIP-7732](https://eips.ethereum.org/EIPS/eip-7732)), the proposer signs `SignedExecutionPayloadEnvelope` after block publication. The SSV cluster runs a second QBFT round to produce this signature.
+On the self-build path (`bid.builder_index == BUILDER_INDEX_SELF_BUILD` per [EIP-7732](https://eips.ethereum.org/EIPS/eip-7732)), the proposer signs `SignedExecutionPayloadEnvelope` after block publication. The [§4](#4-modified-proposer-duty) decision pins exactly one valid envelope: `bid.block_hash` commits to the whole payload, and [`verify_execution_payload_envelope`](https://github.com/ethereum/consensus-specs/blob/a5a1bc630401eedbe2f3d87934c99012578c113b/specs/gloas/fork-choice.md#new-verify_execution_payload_envelope) checks every envelope field against the committed bid and block. There is nothing left for the cluster to agree on, so this duty runs no consensus. The signature is produced in one dissemination round and one partial-signature round: the operator whose beacon node built the decided block (the builder operator) broadcasts the blinded envelope, every operator validates it against its own [§4](#4-modified-proposer-duty) decision and signs its root, and the builder operator publishes the reconstructed signature.
 
 #### Blinded envelope type
 
-To bound QBFT message size, the cluster runs QBFT over a blinded form that substitutes `payload` with `payload_root: Root = hash_tree_root(payload)`. The blinded type MUST use the same five-field `ProgressiveContainer` shape as `ExecutionPayloadEnvelope` (serialization is unaffected; only merkleization differs). Substituting the first field with its root then preserves the progressive container root: `hash_tree_root(BlindedExecutionPayloadEnvelope) == hash_tree_root(ExecutionPayloadEnvelope)`, and a BLS signature over the blinded signing root is valid for the full envelope.
+To bound dissemination message size, the duty works over a blinded form that substitutes `payload` with `payload_root: Root = hash_tree_root(payload)`. The blinded type MUST use the same five-field `ProgressiveContainer` shape as `ExecutionPayloadEnvelope` (serialization is unaffected; only merkleization differs). Substituting the first field with its root then preserves the progressive container root: `hash_tree_root(BlindedExecutionPayloadEnvelope) == hash_tree_root(ExecutionPayloadEnvelope)`, and a BLS signature over the blinded signing root is valid for the full envelope.
 
 ```go
 // SSZ type: ProgressiveContainer(active_fields=[1, 1, 1, 1, 1])
@@ -328,15 +328,15 @@ mix_in_active_fields(
 )
 ```
 
-`payload_root` MUST be the progressive Gloas `ExecutionPayload` root, and `execution_requests` MUST use the progressive Gloas `ExecutionRequests` root. Only `payload` is blinded: the other four fields stay verbatim from the consensus-spec `ExecutionPayloadEnvelope`, so the SSV form deviates from the upstream container in exactly one field, and the request lists (including [EIP-8282](https://eips.ethereum.org/EIPS/eip-8282)'s builder deposits and exits) are tiny relative to the payload, so blinding them would save nothing. The request lists are `ProgressiveList`s whose merkleization mixes in no list maximum; implementations MUST NOT let pre-Gloas positional `ssz-max` bounds reject or re-shape them when decoding or hashing the decided value (Gloas gossip still enforces per-list count limits for all but the deposit-request list, whose bound is removed). Blinded-to-full root equivalence MUST be tested against a fixed expected root, not only by comparing the two locally derived values: a same-implementation comparison passes even when both sides share the same incorrect merkleization.
+`payload_root` MUST be the progressive Gloas `ExecutionPayload` root, and `execution_requests` MUST use the progressive Gloas `ExecutionRequests` root. Only `payload` is blinded: the other four fields stay verbatim from the consensus-spec `ExecutionPayloadEnvelope`, so the SSV form deviates from the upstream container in exactly one field, and the request lists (including [EIP-8282](https://eips.ethereum.org/EIPS/eip-8282)'s builder deposits and exits) are tiny relative to the payload, so blinding them would save nothing. The request lists are `ProgressiveList`s whose merkleization mixes in no list maximum; implementations MUST NOT let pre-Gloas positional `ssz-max` bounds reject or re-shape them when decoding or hashing the disseminated value (Gloas gossip still enforces per-list count limits for all but the deposit-request list, whose bound is removed). Blinded-to-full root equivalence MUST be tested against a fixed expected root, not only by comparing the two locally derived values: a same-implementation comparison passes even when both sides share the same incorrect merkleization.
 
 #### Trigger and envelope source
 
-Fires after the [§4](#4-modified-proposer-duty) self-build block is signed and published. No pre-consensus phase.
+Fires after the [§4](#4-modified-proposer-duty) self-build block is signed and published, carrying the decided block. There is no beacon-node duty fetch and no pre-consensus phase.
 
-Each operator blinds its local full `ExecutionPayloadEnvelope` for the SSV consensus value. Blobs and KZG proofs are never part of the SSV QBFT value.
+Only the builder operator holds the full `ExecutionPayloadEnvelope` (returned inline in its stateless `BlockContents` response, or obtainable from its beacon node on the stateful path); it blinds it for dissemination. Blobs and KZG proofs never cross the SSV wire.
 
-The duty must target publishing the signed envelope before `get_payload_due_ms()` (the `PAYLOAD_DUE_BPS` cutoff, 50% of the slot; [§3](#3-new-duty-payload-timeliness-committee-ptc-attestation)), with margin for gossip to reach PTC beacon nodes before then. The [§4](#4-modified-proposer-duty) block is already out by the attestation deadline ([§1](#1-slot-timing-changes), 25%), leaving roughly a quarter slot (~3s on mainnet) for the envelope QBFT round, post-consensus signing, and publication. An envelope that misses the cutoff makes honest PTC validators vote `payload_present = False`, which can leave the next slot building on the empty parent ([§3](#3-new-duty-payload-timeliness-committee-ptc-attestation)); this is the bounded missed-envelope degradation in Security Considerations.
+The duty must target publishing the signed envelope before `get_payload_due_ms()` (the `PAYLOAD_DUE_BPS` cutoff, 50% of the slot; [§3](#3-new-duty-payload-timeliness-committee-ptc-attestation)), with margin for gossip to reach PTC beacon nodes before then. The [§4](#4-modified-proposer-duty) block is already out by the attestation deadline ([§1](#1-slot-timing-changes), 25%), leaving roughly a quarter slot (~3s on mainnet) for the dissemination, the signing round, and publication. An envelope that misses the cutoff makes honest PTC validators vote `payload_present = False`, which can leave the next slot building on the empty parent ([§3](#3-new-duty-payload-timeliness-committee-ptc-attestation)); this is the bounded missed-envelope degradation in Security Considerations.
 
 #### Roles and constants
 
@@ -348,41 +348,50 @@ const BNRoleEnvelopeProposer BeaconRole = 9
 // types/runner_role.go
 const RoleEnvelopeProposer RunnerRole = 9
 
-type EnvelopeConsensusData struct {
-    Duty    ValidatorDuty
-    Version spec.DataVersion
-    DataSSZ []byte // SSZ-encoded BlindedExecutionPayloadEnvelope
+// types/messages.go additions
+const (
+    // ... existing values ...
+    SSVEnvelopeDisseminationMsgType MsgType = 3
+)
+
+// SSVMessage.Data payload for SSVEnvelopeDisseminationMsgType
+type EnvelopeDissemination struct {
+    Slot     phase0.Slot
+    Envelope BlindedExecutionPayloadEnvelope
 }
+
+// types/partial_sig_message.go additions
+const (
+    // ... existing values ...
+    EnvelopePartialSig PartialSigMsgType = 10
+)
 ```
 
-`MapDutyToRunnerRole()` must map `BNRoleEnvelopeProposer` to `RoleEnvelopeProposer`. Post-consensus reuses `PostConsensusPartialSig`; the runner role discriminates routing.
+`MapDutyToRunnerRole()` must map `BNRoleEnvelopeProposer` to `RoleEnvelopeProposer`.
 
-#### QBFT proposal
+`SSVEnvelopeDisseminationMsgType` is a new top-level `MsgType` (`3`, following the consensus, partial-signature, and DKG values). The existing message classes carry either consensus payloads bound to a live round or bare signing roots; neither can carry a free-standing value, so dissemination needs its own class. The message rides `SignedSSVMessage` operator signing unchanged, with exactly one signer, and its `MessageID` uses `RoleEnvelopeProposer` and the validator public key like the role's partial-signature traffic. `Slot` mirrors `PartialSignatureMessages.Slot`: it stamps the duty slot for [§7](#7-ssv-message-validation), which decodes SSV containers but never the beacon object inside. Deployment note: as with `RequestAuthPartialSig` ([§5](#5-proposer-preferences-duty)), both new wire variants must be decodable network-wide before any operator emits them, because a message with an unknown type fails structural decoding and is REJECT'd, penalizing the forwarding peer.
 
-Each operator places the SSZ-encoded blinded form of its local full envelope in `EnvelopeConsensusData.DataSSZ`.
+#### Dissemination
 
-An operator's local candidate may commit to a block other than the [§4](#4-modified-proposer-duty)-decided block. That candidate is still sufficient to initialize and participate in the envelope QBFT instance, but it is not an admissible proposal: if that operator becomes leader and proposes it, peers reject it through `EnvelopeValueCheckF()` and the duty round-changes. `EnvelopeValueCheckF()` applies to proposed values, not to the local value used to initialize participation. Only an operator whose local envelope commits to the decided block can originate an admissible value without a prior justification.
+After the trigger, the builder operator broadcasts one `EnvelopeDissemination` carrying the blinded form of its full envelope. The builder operator SHOULD be the only originator, but receivers cannot verify authorship (the [§4](#4-modified-proposer-duty) block is public, and any operator can claim to have built it), so admission is by content. Each operator validates an incoming dissemination against its own [§4](#4-modified-proposer-duty) decision and stores the first one that passes; later disseminations for the same slot are ignored ([§7](#7-ssv-message-validation) bounds the traffic). Every check binds the envelope to the decided block and needs no payload bytes:
 
-Under round-change, a later leader can re-propose a justified matching value without holding the corresponding full envelope. The decided value and the operator capable of publishing it are therefore independent of who leads the deciding round.
+- SSZ decode into `EnvelopeDissemination` succeeds and `Slot` matches the duty slot;
+- `BeaconBlockRoot` equals the [§4](#4-modified-proposer-duty)-decided block root for the slot;
+- `ParentBeaconBlockRoot` equals the decided block's `parent_root`;
+- `BuilderIndex == BUILDER_INDEX_SELF_BUILD` (external builders sign their own envelopes; equal to `bid.builder_index` on this path);
+- `hash_tree_root(ExecutionRequests)` equals `execution_requests_root` in the decided block's bid.
 
-#### Value check
+`PayloadRoot` has no local check: it is trusted from the builder operator, matching the existing blinded-block trust model in `BNRoleProposer`, where operators do no field-level validation against their local BN view. A fabricated `PayloadRoot` is self-defeating: no payload exists behind it, so no publishable envelope can be formed, and the worst outcome is a missed reveal, never a wrong payload on chain (see Security Considerations).
 
-A new `EnvelopeValueCheckF()` accepts the decided blinded envelope if all of:
+An operator that has not decided [§4](#4-modified-proposer-duty) for the slot cannot run these checks. It retries validation until its block instance decides and abstains if the decision never arrives; the duty still completes through the threshold of operators holding the decision.
 
-- SSZ decode of `DataSSZ` into `BlindedExecutionPayloadEnvelope` succeeds;
-- `EnvelopeConsensusData.Duty.{Slot, ValidatorIndex, PubKey}` match the duty the runner was started with;
-- `BuilderIndex == BUILDER_INDEX_SELF_BUILD` (external builders sign their own envelopes; this duty applies only to the self-build path);
-- `BeaconBlockRoot` matches the block root decided by the [§4](#4-modified-proposer-duty) block QBFT for the slot.
+#### Signing round
 
-No envelope-content validation: `PayloadRoot` (and therefore every constituent field of the underlying `ExecutionPayload` such as `transactions`, `withdrawals`, `state_root`, `block_hash`) is leader-decided and trusted by the cluster. This matches the existing blinded-block trust model in `BNRoleProposer`, where operators do no field-level validation against their local BN view (see Security Considerations).
-
-#### Post-consensus
-
-Operators sign the decided `BlindedExecutionPayloadEnvelope`'s progressive signing root under `DOMAIN_BEACON_BUILDER` (`0x0B000000`), domain epoch = `compute_epoch_at_slot(duty.slot)` (matching `verify_execution_payload_envelope_signature`'s `get_domain(state, DOMAIN_BEACON_BUILDER)` against the proposal-slot state); by root-equivalence this is the full envelope's signing root. Partial sigs broadcast as `PostConsensusPartialSig`.
+Each operator signs its stored blinded envelope's progressive signing root under `DOMAIN_BEACON_BUILDER` (`0x0B000000`), domain epoch = `compute_epoch_at_slot(duty.slot)` (matching `verify_execution_payload_envelope_signature`'s `get_domain(state, DOMAIN_BEACON_BUILDER)` against the proposal-slot state); by root-equivalence this is the full envelope's signing root. Partial signatures broadcast as `EnvelopePartialSig` in single-entry containers, and each operator validates incoming partials against the root of its own stored dissemination, the same expected-root discipline as [§5](#5-proposer-preferences-duty). A partial signature arriving before its recipient has stored a dissemination is retried rather than dropped, within the [§7](#7-ssv-message-validation) lateness window.
 
 #### Publication
 
-All operators reconstruct the signature over the decided blinded envelope. Only the operator whose local full envelope blinds to that decided value can form a valid publish body; every other envelope has a different signing root and fails signature validation.
+All operators reconstruct the signature over the stored blinded envelope. Only the operator whose local full envelope blinds to that value can form a valid publish body; every other envelope has a different signing root and fails signature validation.
 
 Publication follows [beacon-APIs #624](https://github.com/ethereum/beacon-APIs/pull/624): `Eth-Blob-Data-Included: false` carries `SignedExecutionPayloadEnvelope`, while `true` carries `SignedExecutionPayloadEnvelopeContents`. No public `SignedBlindedExecutionPayloadEnvelope` is used.
 
